@@ -375,7 +375,7 @@ export class Hud {
     }
 
     if (entry.kind === 'talk') {
-      return el('div', { class: 'feed__item feed__talk', text: entry.text });
+      return el('div', { class: 'feed__item feed__talk', text: `${entry.name ?? ''}：「${entry.text}」` });
     }
 
     const cls = `feed__item feed__item--${entry.kind ?? 'action'}`;

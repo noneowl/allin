@@ -330,7 +330,9 @@ export class GameController {
             seat: seatIdx,
             name: seat.name,
             kind: 'talk',
-            text: `${seat.name}：「${decision.tableTalk}」`,
+            // Raw line only: the feed adds the speaker, the seat renders a
+            // speech bubble from the same entry.
+            text: decision.tableTalk,
           });
         }
       }

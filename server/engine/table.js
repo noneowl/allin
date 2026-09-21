@@ -796,9 +796,10 @@ export class Table {
 
   view(viewerSeat = null) {
     const legal = viewerSeat !== null && this.toAct === viewerSeat ? this.legalActions(viewerSeat) : [];
-    // Reasoning is sealed while the hand is live: the text never leaves the
-    // server, so it cannot leak an opponent's holding through devtools either.
-    const revealSecrets = this.phase !== 'playing';
+    // Sealing is per HAND, not per session: once a hand is over its reasoning
+    // stays readable forever. A global "not playing" flag would re-seal the
+    // previous hand the instant the next one was dealt.
+    const liveHandId = this.phase === 'playing' ? this.handId : null;
     return {
       handId: this.handId,
       phase: this.phase,
@@ -822,8 +823,12 @@ export class Table {
       handResult: this.handResult,
       log: this.log
         .slice(-60)
-        .map((entry) => (entry.secret && !revealSecrets ? { ...entry, text: null, sealed: true } : entry)),
-      secretsRevealed: revealSecrets,
+        .map((entry) =>
+          entry.secret && entry.handId === liveHandId ? { ...entry, text: null, sealed: true } : entry,
+        ),
+      // Flipped at every hand boundary so clients rebuild the feed; entries
+      // from finished hands come back unsealed and stay that way.
+      secretsRevealed: this.phase !== 'playing',
       running: this.phase === 'playing',
     };
   }

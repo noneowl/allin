@@ -2,6 +2,20 @@ import { el, clear, toggleClass } from './dom.js';
 import { CardRow } from './cards.js';
 import { fmt, lastActionText, STREET_TEXT } from './format.js';
 
+/** How long a spoken line stays visible above the speaker's avatar. */
+const TALK_TTL_MS = 11000;
+
+/** Newest table talk for a seat, if it is still fresh enough to show. */
+function latestTalkFor(log, seatIndex, now = Date.now()) {
+  if (!log) return null;
+  let best = null;
+  for (const entry of log) {
+    if (entry.kind !== 'talk' || entry.seat !== seatIndex) continue;
+    if (!best || entry.ts > best.ts) best = entry;
+  }
+  return best && now - best.ts < TALK_TTL_MS ? best : null;
+}
+
 /** Seat ring position on the rail. Angle 90° is the bottom (the human). */
 function seatPoint(displayIndex, total) {
   const theta = ((90 + (displayIndex * 360) / total) * Math.PI) / 180;
@@ -65,6 +79,7 @@ export class TableView {
     this.board = new CardRow(boardEl, { stagger: 95 });
     this.seatNodes = new Map();
     this.betNodes = new Map();
+    this.lastLog = [];
   }
 
   // ------------------------------------------------------------- seat DOM
@@ -87,7 +102,8 @@ export class TableView {
     ]);
     const cardsEl = el('div', { class: 'seat__cards' });
     const tagsEl = el('div', { class: 'seat__tags' });
-    const root = el('div', { class: 'seat' }, [cardsEl, panel, tagsEl]);
+    const bubble = el('div', { class: 'seat__bubble', hidden: true });
+    const root = el('div', { class: 'seat' }, [cardsEl, panel, tagsEl, bubble]);
 
     entry = {
       root,
@@ -98,6 +114,7 @@ export class TableView {
       stackEl,
       stackValue: stackEl.querySelector('.seat__stack-value'),
       tagsEl,
+      bubble,
       cards: new CardRow(cardsEl, { stagger: 80 }),
       thinking: null,
     };
@@ -150,6 +167,15 @@ export class TableView {
       specs = [];
     }
     entry.cards.render(specs);
+
+    // spoken line, shown as a bubble hanging off the avatar
+    const talk = latestTalkFor(table.log, seat.seat);
+    if (talk) {
+      entry.bubble.textContent = talk.text;
+      entry.bubble.hidden = false;
+    } else {
+      entry.bubble.hidden = true;
+    }
 
     // status tags / thinking indicator
     clear(entry.tagsEl);
@@ -257,6 +283,7 @@ export class TableView {
       return;
     }
 
+    this.lastLog = table.log ?? [];
     const total = table.seats.length;
     // Every player sees themselves at the bottom, so seats rotate per viewer.
     const viewerSeat = table.viewerSeat ?? 0;
@@ -294,15 +321,22 @@ export class TableView {
     this.#paintCenter(table);
   }
 
-  /** Cheap per-frame update for the AI thinking timers. */
+  /** Cheap periodic update: thinking timers and expiring speech bubbles. */
   tick() {
     const now = Date.now();
-    for (const [, entry] of this.seatNodes) {
-      if (!entry.thinking) continue;
-      const started = Number(entry.thinking.dataset.started) || now;
-      const seconds = Math.max(0, Math.round((now - started) / 1000));
-      const label = entry.thinking.querySelector('.thinking-label');
-      if (label) label.textContent = `思考中 ${seconds}s`;
+    for (const [seatIndex, entry] of this.seatNodes) {
+      if (entry.thinking) {
+        const started = Number(entry.thinking.dataset.started) || now;
+        const seconds = Math.max(0, Math.round((now - started) / 1000));
+        const label = entry.thinking.querySelector('.thinking-label');
+        if (label) label.textContent = `思考中 ${seconds}s`;
+      }
+      // Bubbles are driven by wall-clock age, so they must be re-checked even
+      // when no new state arrives.
+      if (!entry.bubble.hidden) {
+        const talk = latestTalkFor(this.lastLog, seatIndex, now);
+        if (!talk) entry.bubble.hidden = true;
+      }
     }
   }
 }

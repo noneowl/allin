@@ -208,6 +208,66 @@ test('reasoning is revealed once the hand ends', async () => {
   assert.equal(view.secretsRevealed, true);
 });
 
+test('a finished hand stays readable while the next hand is played', async () => {
+  // Regression: sealing used to be driven by the global `phase !== 'playing'`
+  // flag, so dealing the next hand re-sealed the previous hand's reasoning and
+  // the player only had the result screen to read it.
+  const store = new RoomStore({ getConfig: () => mockConfig() });
+  const room = store.create({
+    seatCount: 3,
+    seats: [HUMAN('A'), AI('ivan'), AI('biao')],
+    rules: { smallBlind: 10, bigBlind: 20, startingStack: 2000 },
+  });
+  await room.controller.newGame();
+  // Three-handed the button (the human) acts first, so drive a call to give
+  // the AI seats something to decide.
+  await room.controller.humanAction(0, { action: 'call' });
+
+  const table = room.controller.table;
+  const hand1 = table.handId;
+  const authored = table.log.filter((e) => e.kind === 'reason' && e.handId === hand1);
+  assert.ok(authored.length > 0, 'hand 1 produced reasoning to check');
+
+  table.phase = 'handover';
+  table.startHand();
+  assert.equal(table.handId, hand1 + 1, 'a new hand was dealt');
+  assert.equal(table.phase, 'playing');
+
+  const view = room.controller.view(0);
+  const fromHand1 = view.log.filter((e) => e.kind === 'reason' && e.handId === hand1);
+  assert.equal(fromHand1.length, authored.length, 'no hand 1 reasoning vanished');
+  for (const entry of fromHand1) {
+    assert.notEqual(entry.sealed, true, 'hand 1 reasoning must not be re-sealed');
+    assert.equal(typeof entry.text, 'string');
+    assert.ok(entry.text.length > 0);
+  }
+  // And the raw text really is in the payload, not just an unsealed flag.
+  const raw = JSON.stringify(view);
+  for (const entry of authored) assert.ok(raw.includes(entry.text), 'hand 1 text missing from the payload');
+});
+
+test('the hand being played is still sealed', async () => {
+  const store = new RoomStore({ getConfig: () => mockConfig() });
+  const room = store.create({
+    seatCount: 3,
+    seats: [HUMAN('A'), AI('ivan'), AI('biao')],
+    rules: { smallBlind: 10, bigBlind: 20, startingStack: 2000 },
+  });
+  await room.controller.newGame();
+  await room.controller.humanAction(0, { action: 'call' });
+
+  const table = room.controller.table;
+  const view = room.controller.view(0);
+  const live = view.log.filter((e) => e.kind === 'reason' && e.handId === table.handId);
+  assert.ok(live.length > 0, 'the live hand has reasoning');
+  assert.ok(live.every((e) => e.sealed === true && e.text === null), 'live reasoning must stay sealed');
+
+  const raw = JSON.stringify(view);
+  for (const entry of table.log.filter((e) => e.kind === 'reason')) {
+    assert.ok(!raw.includes(entry.text), 'live reasoning text must not be serialised');
+  }
+});
+
 // ------------------------------------------------------- session isolation
 
 test('every AI seat talks to the provider on its own session', async () => {
