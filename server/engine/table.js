@@ -808,6 +808,9 @@ export class Table {
       amount: result.amount ?? 0,
       board: this.board.slice(),
       deltas,
+      // Who let it go, so the models can be told "you folded, and nobody showed
+      // — you still don't know if he had it".
+      foldedSeats: this.seats.filter((s) => s.folded && !s.out).map((s) => s.seat),
       showdown: (result.showdown ?? []).map((s) => ({
         seat: s.seat,
         name: s.name,

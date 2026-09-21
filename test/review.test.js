@@ -334,9 +334,43 @@ test('the character card is rendered into the system prompt', async () => {
   for (const heading of ['起手范围', '激进度', '下注尺度', '弱点']) {
     assert.match(system, new RegExp(heading), `missing section: ${heading}`);
   }
-  // The anti-shove guidance must always be present.
-  assert.match(system, /全下是极端动作/);
+  // The gambler framing is the point of the card: desire AND fear, plus the
+  // situations that break their discipline.
+  assert.match(system, /心里真实的想法/);
+  assert.match(system, /什么会让你失控/);
+  assert.match(system, /你不是计算器，你是个赌徒/);
+  assert.match(system, /想赌的/);
+  assert.match(system, /想怕的/);
+  assert.match(system, /关于"打错牌"/);
+  // Anti-shove guidance survives, but framed as a gambler's preference.
+  assert.match(system, /不要习惯性地直接全下/);
   assert.match(system, /如何利用历史信息/);
+});
+
+test('every character has a gambler heart, not just frequencies', async () => {
+  const { PERSONALITIES } = await import('../server/ai/personalities.js');
+  for (const p of PERSONALITIES) {
+    assert.ok(typeof p.heart === 'string' && p.heart.length > 80, `${p.id}.heart is too thin`);
+    assert.ok(typeof p.triggers === 'string' && p.triggers.length > 60, `${p.id}.triggers is too thin`);
+    // Desire and fear must both be audible in the inner voice.
+    assert.match(p.heart, /怕|不敢|恐惧|难受/, `${p.id}.heart never mentions fear`);
+    assert.match(p.heart, /想|渴望|享受|上瘾|快感/, `${p.id}.heart never mentions wanting`);
+  }
+});
+
+test('the reasoning instruction asks for the inner tug-of-war', async () => {
+  const { room } = makeRoom([HUMAN('我'), AI('ivan')]);
+  await room.controller.newGame();
+  const system = buildMessages({
+    table: room.controller.table,
+    seatIdx: 1,
+    personality: personalityById('ivan'),
+    tableTalk: true,
+    reasoning: true,
+    failures: [],
+  })[0].content;
+  assert.match(system, /看出你心里的拉扯/);
+  assert.match(system, /不要写成概率报告/);
 });
 
 test('hole cards are only rendered for the acting seat', async () => {

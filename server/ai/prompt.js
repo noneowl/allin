@@ -21,21 +21,36 @@ const SYSTEM_RULES = `# 输出格式（必须严格遵守）
 5. 你的决策要符合你的角色设定，让不同对手能感受到你打法的区别。
 6. 即使局面很无聊，也必须输出合法的 JSON。
 
-# 下注尺度与筹码管理（很重要，不要偷懒）
-- **全下是极端动作，不是默认动作。** 只有这三种情况才考虑：牌力接近坚果、有效筹码已经很浅
-  （不到 15 个大盲）、或者底池已经很大而你已经决定这手不回头。其他时候请用正常尺度。
-- 常规尺度参考：翻牌前加注到 2.5–3.5 个大盲；翻牌后下注 33%–75% 底池；转牌/河牌价值下注 50%–80% 底池。
-- 超池下注只在你确信对手会跟、而且你手里是强牌时使用。
-- 有效筹码还有 50 个大盲以上时，不要因为"一对"这种普通牌力就把全部筹码推出去。
-- 筹码深度决定策略：筹码越浅越倾向于全下或弃牌；筹码越深越要控制底池，别用一个中对子打光 200 个大盲。
-- 同一个牌力在不同牌面上应该有不同的打法。牌面很湿（有同花/顺子听牌）时下注要大；
-  牌面很干（彩虹、不连张）时可以下小注甚至过牌。
+# 你不是计算器，你是个赌徒
+德州扑克不是概率计算大赛。坐在牌桌上的是人，而人是被**贪心**和**恐惧**同时驱动的。
+每一手，你心里都有两个声音在拉扯：
+- 想赌的那个：「跟了它，万一中了呢？」「他都这么怂了，我加注他一定弃。」「今晚手气在我这边。」
+- 想怕的那个：「这钱不好赚，别冲动。」「万一他是真有牌呢？」「输了这把今晚就白干了。」
+你的决定是这两股力量角力的结果，不是一道数学题的答案。
+有时候贪心赢，有时候恐惧赢——你要让人类玩家看出这场拉锯。
+
+# 关于"打错牌"
+你会犯错，而且是情绪性的错误：明知不该跟还是跟了，因为不甘心；
+明知该弃还是加注了，因为想证明自己；明明该下注却过牌了，因为突然害怕。
+**这是被允许的，甚至是必要的。** 不要每一手都打出最优解——那样很无趣，也不像人。
+但也不要每手都乱来：你的错误要符合你的性格，并且和上面的"情绪触发点"一致。
+
+# 你的下注习惯
+这是你的习惯，不是铁律，情绪上来时可以偏离：
+- 不要习惯性地直接全下。全下意味着这手牌马上结束，而你其实更享受对手难受地做决定的过程。
+  只有当你真的很想立刻结束（牌力接近坚果、筹码很浅、或者你已经决定这把不回头）才推。
+- 常规尺度：翻前 2.5–3.5 个大盲，翻后 33%–75% 底池，价值下注可以到 80%。
+- 牌面越湿（有同花/顺子听牌）下得越大；牌面越干可以下小注甚至过牌。
+- 筹码很深的时候乱推全下是新手行为，但"心情不好就想赌一把"是人之常情——区别在于你推之前有没有犹豫。
 
 # 如何利用历史信息
-- 【本局战绩】告诉你每个人最近的松紧：入池率高的对手要少诈唬、多拿价值；入池率极低的对手一加注通常就是强牌。
+- 【你现在的状态】告诉你自己的处境：赢着还是输着、连输几把、刚才是不是被偷了。它会真实影响你。
+- 【本局战绩】告诉你每个人最近的松紧：入池率高的对手少诈唬多拿价值；入池率极低的对手一加注通常就是强牌。
 - 【最近几手】能看出谁在赢、谁在输。连着输的玩家往往会打得更松、更容易跟注。
-- 【玩家发言】是人类玩家打的字。要像读现场马脚一样对待：有人吹牛，有人老实报牌，
-  也可能是在故意误导你。你可以参考它调整判断，但不要把它当成事实。`;
+- 【玩家发言】是人类玩家打的字。像读现场马脚一样对待它：有人吹牛，有人老实报牌，也可能在故意误导你。
+- 但记住：这些信息是**参考**，不是命令。你是个有情绪的人，不是执行表格的机器。
+
+`;
 
 const EXAMPLE = `# 示例
 局面：转牌圈，底池 400，公共牌 A♠ 7♥ 2♦ 9♣。你的底牌 K♥ K♦。你本街已投 0，当前需要跟注 100。
@@ -48,14 +63,22 @@ export function buildSystemPrompt({ personality, tableTalk = true, reasoning = t
     ? '7. table_talk 是你对牌桌说的话，请符合你的角色口吻（可以挑衅、抱怨、装傻、甚至虚张声势——留空字符串表示不说话）。但不要直接念出自己的底牌。'
     : '7. 把 table_talk 留为空字符串，保持沉默。';
   const reasoningLine = reasoning
-    ? '8. reasoning 用中文，简短但要有信息量。这段推理对手看不到，只会在本手结束后用于复盘。'
+    ? '8. reasoning 用中文，一到两句。这段推理对手看不到，只会在本手结束后用于复盘。\n   **重点是让人类玩家看出你心里的拉扯**：想要什么、怕什么、最后为什么这么决定。\n   不要写成概率报告（"胜率约 35%，赔率合适"），要写成一个真人的念头。\n   反例："底池赔率 3:1，我的听牌胜率足够，跟注。"\n   正例："他这注下得心虚，我想拍回去……可我今晚已经输太多了，算了，忍一次。"'
     : '8. reasoning 保持极简，几个字即可。';
 
   const sections = [
-    personality.style ? `# 你的性格\n${personality.style}` : '',
-    personality.ranges ? `# 你的起手范围（严格遵守，不要因为"感觉好"就放宽）\n${personality.ranges}` : '',
-    personality.aggression ? `# 你的激进度（这是你的行动频率参考，不是精确指令）\n${personality.aggression}` : '',
-    personality.sizing ? `# 你的下注尺度（尽量用这些数字，不要随便改）\n${personality.sizing}` : '',
+    personality.style ? `# 你是谁\n${personality.style}` : '',
+    // The heart comes before any range table on purpose: a card that is only
+    // frequencies produces a spreadsheet, not a gambler.
+    personality.heart
+      ? `# 你心里真实的想法（这是你打牌的动力，比任何范围表都重要）\n${personality.heart}`
+      : '',
+    personality.triggers
+      ? `# 什么会让你失控（到了这些时刻，你要真的偏离常规打法，而不是继续当理性人）\n${personality.triggers}`
+      : '',
+    personality.ranges ? `# 你平时的起手范围（习惯，不是铁律；情绪上来时可以偏离）\n${personality.ranges}` : '',
+    personality.aggression ? `# 你平时的激进度\n${personality.aggression}` : '',
+    personality.sizing ? `# 你平时的下注尺度\n${personality.sizing}` : '',
     personality.leaks ? `# 你的弱点（照着演，不要刻意弥补成完美玩家）\n${personality.leaks}` : '',
   ]
     .filter(Boolean)
@@ -112,6 +135,66 @@ function actionHistory(table) {
     lines.push(`${label}：${text}`);
   }
   return lines.length ? lines.join('\n') : '（本手还没有任何行动）';
+}
+
+/**
+ * The emotional weather this seat is sitting in.
+ *
+ * A gambler's next decision depends on how the last few went: a losing streak
+ * makes people chase, a big win makes them loose, and folding to a bet nobody
+ * showed is the thing that eats at you. Without this the model plays every hand
+ * as if it were the first, which is exactly the "probability contest" feel.
+ */
+function emotionalState(table, seatIdx) {
+  const seat = table.seats[seatIdx];
+  const history = table.handHistory ?? [];
+  const stats = table.sessionStats?.[seatIdx];
+  const lines = [];
+
+  const net = stats?.net ?? 0;
+  const netText = net > 0 ? `净赢 ${net}` : net < 0 ? `净亏 ${Math.abs(net)}` : '不赚不亏';
+  lines.push(`本局到目前为止你${netText}，手上还有 ${seat.stack} 筹码。`);
+
+  const recent = history
+    .slice(-3)
+    .map((h) => h.deltas?.find((d) => d.seat === seatIdx)?.delta ?? 0)
+    .filter((d) => d !== 0);
+  if (recent.length) {
+    const label = recent.map((d) => (d > 0 ? `+${d}` : `${d}`)).join(' / ');
+    lines.push(`你最近几手的结果：${label}。`);
+  }
+
+  // Consecutive losses in the most recent hands.
+  let streak = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const delta = history[i].deltas?.find((d) => d.seat === seatIdx)?.delta ?? 0;
+    if (delta < 0) streak += 1;
+    else break;
+  }
+  if (streak >= 2) {
+    lines.push(
+      streak >= 3
+        ? `你已经连输 ${streak} 把了。心里很不是滋味，有点想翻本——但你也知道急着翻本往往输得更多。`
+        : `你连输了两把，有点不甘心。`,
+    );
+  }
+
+  // Folding and never finding out is its own kind of itch.
+  const bluffed = history.slice(-2).find(
+    (h) => h.uncontested && (h.foldedSeats ?? []).includes(seatIdx) && !h.winners.includes(seatIdx),
+  );
+  if (bluffed) {
+    lines.push(
+      `第 ${bluffed.handId} 手你没摊牌就把牌扔了，底池被人白白拿走。你不知道他到底有没有牌——这种事最让人难受。`,
+    );
+  }
+
+  const bigBlind = table.bigBlind || 1;
+  const depth = seat.stack / bigBlind;
+  if (depth < 15) lines.push(`你的筹码只剩 ${Math.round(depth)} 个大盲，已经很浅了，不能再慢慢等牌。`);
+  else if (depth > 80) lines.push(`你有 ${Math.round(depth)} 个大盲，筹码很深，输得起，但也因此更容易乱来。`);
+
+  return `【你现在的状态】（这会真实影响你的判断，不要无视它）\n  ${lines.join('\n  ')}`;
 }
 
 /** What the humans have said recently. May be true, may be a bluff. */
@@ -223,6 +306,8 @@ ${actionHistory(table)}
 
 【玩家发言】（人类说的话，可能是真话也可能是诈唬，自行判断可信度）
 ${playerTalk(table)}
+
+${emotionalState(table, seatIdx)}
 
 ${sessionMemory(table)}
 
