@@ -116,7 +116,7 @@ export function saveConfig(patch) {
   if (patch.table && typeof patch.table === 'object') {
     const t = { ...next.table, ...patch.table };
     next.table = {
-      seats: clamp(Math.round(Number(t.seats)), 2, 6, DEFAULT_CONFIG.table.seats),
+      seats: clamp(Math.round(Number(t.seats)), 2, 9, DEFAULT_CONFIG.table.seats),
       smallBlind: clamp(Math.round(Number(t.smallBlind)), 1, 100000, DEFAULT_CONFIG.table.smallBlind),
       bigBlind: clamp(Math.round(Number(t.bigBlind)), 2, 200000, DEFAULT_CONFIG.table.bigBlind),
       startingStack: clamp(Math.round(Number(t.startingStack)), 100, 10000000, DEFAULT_CONFIG.table.startingStack),

@@ -1,27 +1,27 @@
-import { Table } from './engine/table.js';
+import { Table, GameError } from './engine/table.js';
 import { PokerAgent, AIError, fallbackAction } from './ai/agent.js';
-import { lineupFor, HUMAN, personalityById } from './ai/personalities.js';
-import { providerPreset } from './providers/catalog.js';
+import { personalityById } from './ai/personalities.js';
 
 /**
- * Owns one player's table plus the async loop that asks the LLM for every
- * opponent decision.
+ * Owns one room's table plus the async loop that asks the LLM for every AI
+ * decision.
  *
- * All mutations run through a promise chain so a click from the browser can
+ * All mutations run through a promise chain so a click from any browser can
  * never interleave with an in-flight AI turn.
  */
 export class GameController {
-  constructor({ sessionId, getConfig }) {
-    this.sessionId = sessionId;
+  constructor({ roomId, getConfig, seatConfig }) {
+    this.roomId = roomId;
     this.getConfig = getConfig;
+    this.seatConfig = seatConfig;
     this.table = null;
     this.listeners = new Set();
     this.queue = Promise.resolve();
     this.ai = new Map(); // seat -> { status, startedAt, ... }
     this.controllers = new Map(); // seat -> AbortController
+    this.connectionCounts = new Map(); // seat -> number of live event streams
     this.lastError = null;
     this.rules = null;
-    this.busy = false;
   }
 
   // -------------------------------------------------------------- plumbing
@@ -56,70 +56,80 @@ export class GameController {
     return this.table;
   }
 
+  get connectedCount() {
+    return this.connectionCounts.size;
+  }
+
+  /** Ref-counted so several tabs on the same seat behave correctly. */
+  addConnection(seatIndex) {
+    if (seatIndex === null || seatIndex === undefined) return;
+    this.connectionCounts.set(seatIndex, (this.connectionCounts.get(seatIndex) ?? 0) + 1);
+    this.#syncPresence();
+  }
+
+  removeConnection(seatIndex) {
+    if (seatIndex === null || seatIndex === undefined) return;
+    const next = (this.connectionCounts.get(seatIndex) ?? 0) - 1;
+    if (next <= 0) this.connectionCounts.delete(seatIndex);
+    else this.connectionCounts.set(seatIndex, next);
+    this.#syncPresence();
+  }
+
+  #syncPresence() {
+    for (const seat of this.seatConfig) {
+      const connected = this.connectionCounts.has(seat.index);
+      seat.connected = connected;
+      if (connected) seat.lastSeen = Date.now();
+    }
+    this.broadcast();
+  }
+
   // ------------------------------------------------------------- lifecycle
 
-  newGame(overrides = {}) {
+  #players() {
+    return this.seatConfig.map((seat, index) => ({
+      name: seat.name,
+      avatar: seat.avatar,
+      isHuman: seat.type === 'human',
+      personality:
+        seat.type === 'ai'
+          ? personalityById(seat.personalityId)
+          : { id: `human-${index}`, name: seat.name, title: '', avatar: seat.avatar, tagline: '', style: '' },
+    }));
+  }
+
+  newGame() {
     return this.enqueue(async () => {
       this.abortAll();
       const cfg = this.getConfig();
-      const rules = {
-        seats: clampInt(overrides.seats ?? cfg.table.seats, 2, 6),
-        smallBlind: clampInt(overrides.smallBlind ?? cfg.table.smallBlind, 1, 1_000_000),
-        bigBlind: clampInt(overrides.bigBlind ?? cfg.table.bigBlind, 2, 2_000_000),
-        startingStack: clampInt(overrides.startingStack ?? cfg.table.startingStack, 100, 100_000_000),
+      this.rules = {
+        seats: this.seatConfig.length,
+        smallBlind: cfg.table.smallBlind,
+        bigBlind: cfg.table.bigBlind,
+        startingStack: cfg.table.startingStack,
       };
-      if (rules.bigBlind <= rules.smallBlind) rules.bigBlind = rules.smallBlind * 2;
-      this.rules = rules;
-
-      const opponents = lineupFor(rules.seats);
-      const players = [
-        { name: HUMAN.name, avatar: HUMAN.avatar, isHuman: true, personality: HUMAN },
-        ...opponents.map((p) => ({
-          name: p.name,
-          avatar: p.avatar,
-          isHuman: false,
-          personality: p,
-        })),
-      ];
 
       this.ai.clear();
       this.lastError = null;
       this.table = new Table({
-        players,
-        smallBlind: rules.smallBlind,
-        bigBlind: rules.bigBlind,
-        startingStack: rules.startingStack,
+        players: this.#players(),
+        smallBlind: this.rules.smallBlind,
+        bigBlind: this.rules.bigBlind,
+        startingStack: this.rules.startingStack,
       });
 
-      this.emit('game_new', { rules, players: players.map((p) => p.name) });
+      this.emit('game_new', { rules: this.rules });
       this.table.startHand();
       this.broadcast();
       await this.driveAI();
     });
   }
 
-  startHand() {
-    return this.enqueue(async () => {
-      const table = this.requireTable();
-      if (table.phase === 'playing') throw new Error('当前手牌还没有结束');
-      if (table.isGameOver()) {
-        this.emit('toast', { level: 'warn', message: '牌局已结束，请开一局新的。' });
-        return;
-      }
-      table.startHand();
-      this.lastError = null;
-      this.broadcast();
-      await this.driveAI();
-    });
-  }
-
-  /** Auto-start the next hand after a short pause so the player can read results. */
-  nextHand(delayMs = 0) {
+  nextHand() {
     return this.enqueue(async () => {
       const table = this.requireTable();
       if (table.phase === 'playing') return;
       if (table.isGameOver()) return;
-      if (delayMs > 0) await sleep(delayMs);
       table.startHand();
       this.lastError = null;
       this.broadcast();
@@ -127,15 +137,37 @@ export class GameController {
     });
   }
 
-  humanAction(action) {
+  humanAction(seatIndex, action) {
     return this.enqueue(async () => {
       const table = this.requireTable();
-      if (table.phase !== 'playing') throw new Error('当前不在下注阶段');
-      const seatIdx = table.toAct;
-      if (seatIdx === null) throw new Error('当前没有玩家需要行动');
-      const seat = table.seats[seatIdx];
-      if (!seat.isHuman) throw new Error('还没轮到你行动');
-      table.applyAction(seatIdx, action);
+      if (table.phase !== 'playing') throw new GameError('当前不在下注阶段', 'NOT_PLAYING');
+      if (table.toAct !== seatIndex) throw new GameError('还没轮到你行动', 'NOT_YOUR_TURN');
+      const seat = table.seats[seatIndex];
+      if (!seat || !seat.isHuman) throw new GameError('该座位不是人类玩家', 'NOT_HUMAN');
+      table.applyAction(seatIndex, action);
+      this.broadcast();
+      await this.driveAI();
+    });
+  }
+
+  /**
+   * Host-only rescue for a human who left the table: take the free option, or
+   * fold if there is a price to call. Never used while their stream is live.
+   */
+  forceAction(seatIndex) {
+    return this.enqueue(async () => {
+      const table = this.requireTable();
+      if (table.phase !== 'playing' || table.toAct !== seatIndex) return;
+      const seat = table.seats[seatIndex];
+      if (!seat || !seat.isHuman) return;
+      const action = fallbackAction(table, seatIndex);
+      table.applyAction(seatIndex, action);
+      table.addLog({
+        seat: seatIndex,
+        name: seat.name,
+        kind: 'system',
+        text: `${seat.name} 已离线，代其${action.type === 'check' ? '过牌' : '弃牌'}`,
+      });
       this.broadcast();
       await this.driveAI();
     });
@@ -151,14 +183,12 @@ export class GameController {
 
   #personalityFor(seat) {
     if (seat.personality && seat.personality.style) return seat.personality;
-    if (typeof seat.personality === 'object' && seat.personality.id) {
-      return personalityById(seat.personality.id);
-    }
+    if (seat.personality && seat.personality.id) return personalityById(seat.personality.id);
     return personalityById('wei');
   }
 
   /**
-   * Play out every consecutive AI turn. Returns when it is the human's turn,
+   * Play out every consecutive AI turn. Returns when it is a human's turn,
    * the hand is over, or no one has chips left to act.
    */
   async driveAI() {
@@ -184,12 +214,7 @@ export class GameController {
       const cfg = this.getConfig();
       if (!cfg.ready) {
         this.lastError = '尚未配置 AI 供应商（Base URL / 模型 / API Key），无法继续。';
-        this.emit('ai_error', {
-          seat: seatIdx,
-          name: seat.name,
-          fatal: true,
-          message: this.lastError,
-        });
+        this.emit('ai_error', { seat: seatIdx, name: seat.name, fatal: true, message: this.lastError });
         break;
       }
 
@@ -216,7 +241,9 @@ export class GameController {
         const agent = new PokerAgent({
           config: cfg,
           personality,
-          sessionId: this.sessionId,
+          // Every AI seat gets its own provider-side session, so no two
+          // opponents ever share conversation state or prompt cache lineage.
+          sessionId: `${this.roomId}-seat${seatIdx}`,
           tableTalk: cfg.tableTalk,
           reasoning: cfg.reasoning,
         });
@@ -254,11 +281,13 @@ export class GameController {
       } else {
         table.applyAction(seatIdx, decision.normalized);
         if (cfg.reasoning && decision.reasoning) {
+          // `secret: true` keeps this out of every client view until the hand ends.
           table.addLog({
             seat: seatIdx,
             name: seat.name,
             avatar: seat.avatar,
             kind: 'reason',
+            secret: true,
             text: decision.reasoning,
             action: decision.action,
             amount: decision.amount,
@@ -292,7 +321,6 @@ export class GameController {
     }
   }
 
-  /** Re-ask the LLM for the seat currently on turn (used by the retry button). */
   retryCurrentAI() {
     return this.enqueue(async () => {
       const table = this.table;
@@ -313,26 +341,44 @@ export class GameController {
 
   // ---------------------------------------------------------------- views
 
-  view() {
+  /** State shaped for one specific viewer. Never serialise another seat's view. */
+  view(viewerSeat = null) {
     const cfg = this.getConfig();
+    const config = {
+      ready: cfg.ready,
+      provider: cfg.provider,
+      model: cfg.model,
+      hasApiKey: Boolean(cfg.apiKey),
+      tableTalk: cfg.tableTalk,
+      reasoning: cfg.reasoning,
+    };
+
     if (!this.table) {
       return {
         table: null,
         ai: {},
-        rules: this.rules ?? cfg.table,
-        config: {
-          ready: cfg.ready,
-          provider: cfg.provider,
-          model: cfg.model,
-          hasApiKey: Boolean(cfg.apiKey),
-          tableTalk: cfg.tableTalk,
-          reasoning: cfg.reasoning,
-        },
+        rules: this.rules,
+        roomId: this.roomId,
+        seats: this.seatConfig.map((s) => ({
+          index: s.index,
+          type: s.type,
+          name: s.name,
+          avatar: s.avatar,
+          personalityId: s.personalityId,
+          connected: s.connected,
+        })),
+        viewerSeat,
+        config,
         error: this.lastError,
       };
     }
-    const view = this.table.view(0);
-    if (cfg.showAiCards) {
+
+    const view = this.table.view(viewerSeat);
+    const presence = new Map(this.seatConfig.map((s) => [s.index, s.connected]));
+    for (const seatView of view.seats) {
+      seatView.connected = view.seats.length === 0 ? false : (presence.get(seatView.seat) ?? false);
+    }
+    if (cfg.showAiCards && viewerSeat !== null) {
       for (const seatView of view.seats) {
         const seat = this.table.seats[seatView.seat];
         if (!seat.isHuman && !seat.folded && seat.hole.length) {
@@ -343,29 +389,23 @@ export class GameController {
     }
     view.ai = Object.fromEntries(this.ai);
     view.error = this.lastError;
-    view.config = {
-      ready: cfg.ready,
-      provider: cfg.provider,
-      model: cfg.model,
-      hasApiKey: Boolean(cfg.apiKey),
-      tableTalk: cfg.tableTalk,
-      reasoning: cfg.reasoning,
-    };
+    view.config = config;
     view.rules = this.rules;
-    return { table: view, ai: view.ai };
+    view.viewerSeat = viewerSeat;
+    view.roomId = this.roomId;
+    view.players = this.seatConfig.map((s) => ({
+      index: s.index,
+      type: s.type,
+      name: s.name,
+      avatar: s.avatar,
+      personalityId: s.personalityId,
+      connected: s.connected,
+    }));
+    return view;
   }
 
+  /** Signals subscribers to re-serialise; each one does so for its own seat. */
   broadcast() {
-    this.emit('state', this.view());
+    this.emit('state');
   }
 }
-
-function clampInt(value, min, max) {
-  const n = Math.round(Number(value));
-  if (!Number.isFinite(n)) return min;
-  return Math.min(max, Math.max(min, n));
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-export { providerPreset };

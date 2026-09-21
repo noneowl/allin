@@ -2,8 +2,6 @@ import { el, clear, toggleClass } from './dom.js';
 import { CardRow } from './cards.js';
 import { fmt, lastActionText, STREET_TEXT } from './format.js';
 
-const HUMAN_SEAT = 0;
-
 /** Seat ring position on the rail. Angle 90° is the bottom (the human). */
 function seatPoint(displayIndex, total) {
   const theta = ((90 + (displayIndex * 360) / total) * Math.PI) / 180;
@@ -108,16 +106,16 @@ export class TableView {
     return entry;
   }
 
-  #paintSeat(entry, seat, table, state) {
+  #paintSeat(entry, seat, table, { isHero, half }) {
     const thinking = table.ai?.[seat.seat];
     const isTurn = table.toAct === seat.seat;
     const winnerSeats = new Set((table.handResult?.awards ?? []).map((a) => a.seat));
 
+    // Built from scratch each pass, so the caller must supply every state class.
     entry.root.className = 'seat';
     entry.root.dataset.seat = String(seat.seat);
-    if (seat.seat === HUMAN_SEAT) entry.root.classList.add('seat--hero');
-    if (seat.seat === HUMAN_SEAT) entry.root.dataset.half = 'bottom';
-    else entry.root.dataset.half = seat.y > 46 ? 'bottom' : 'top';
+    entry.root.dataset.half = half;
+    if (isHero) entry.root.classList.add('seat--hero');
     toggleClass(entry.root, 'is-turn', isTurn);
     toggleClass(entry.root, 'is-folded', seat.folded && !seat.out);
     toggleClass(entry.root, 'is-out', seat.out);
@@ -179,6 +177,9 @@ export class TableView {
       if (seat.handNameZh && !seat.folded) {
         entry.tagsEl.appendChild(el('span', { class: 'tag tag--hand', text: seat.handNameZh }));
       }
+      if (seat.isHuman && seat.connected === false && !seat.out && !seat.folded) {
+        entry.tagsEl.appendChild(el('span', { class: 'tag tag--offline', text: '离线' }));
+      }
       if (winnerSeats.has(seat.seat)) {
         const award = (table.handResult?.awards ?? []).find((a) => a.seat === seat.seat);
         entry.tagsEl.appendChild(el('span', { class: 'tag tag--win', text: `+${fmt(award?.amount ?? 0)}` }));
@@ -188,7 +189,7 @@ export class TableView {
 
   // --------------------------------------------------------------- bets
 
-  #paintBets(table) {
+  #paintBets(table, displayIndex) {
     const show = table.phase === 'playing';
     const seen = new Set();
 
@@ -202,6 +203,9 @@ export class TableView {
         this.betNodes.set(seat.seat, node);
         this.betsEl.appendChild(node);
       }
+      const point = betPoint(displayIndex(seat.seat), table.seats.length);
+      node.style.setProperty('--x', `${point.x}%`);
+      node.style.setProperty('--y', `${point.y}%`);
       node.querySelector('.bet__amount').textContent = fmt(amount);
       // rebuild the chips only when the denomination bucket changes
       const plan = chipPlan(amount);
@@ -241,9 +245,8 @@ export class TableView {
 
   // --------------------------------------------------------------- render
 
-  render(state) {
-    const table = state?.table;
-    if (!table) {
+  render(table) {
+    if (!table || !Array.isArray(table.seats)) {
       for (const [, entry] of this.seatNodes) entry.root.remove();
       this.seatNodes.clear();
       for (const [, node] of this.betNodes) node.remove();
@@ -255,6 +258,9 @@ export class TableView {
     }
 
     const total = table.seats.length;
+    // Every player sees themselves at the bottom, so seats rotate per viewer.
+    const viewerSeat = table.viewerSeat ?? 0;
+    const displayIndex = (seat) => (((seat - viewerSeat) % total) + total) % total;
     const liveSeats = new Set(table.seats.map((s) => s.seat));
 
     for (const [seatIndex, entry] of this.seatNodes) {
@@ -266,18 +272,21 @@ export class TableView {
 
     for (const seat of table.seats) {
       const entry = this.#ensureSeat(seat);
-      const point = seatPoint(seat.seat, total);
+      const point = seatPoint(displayIndex(seat.seat), total);
       entry.root.style.setProperty('--x', `${point.x}%`);
       entry.root.style.setProperty('--y', `${point.y}%`);
-      this.#paintSeat(entry, { ...seat, y: point.y }, table, state);
+      this.#paintSeat(entry, seat, table, {
+        isHero: seat.seat === viewerSeat,
+        half: point.y > 46 ? 'bottom' : 'top',
+      });
     }
 
-    this.#paintBets(table);
+    this.#paintBets(table, displayIndex);
 
     for (const seat of table.seats) {
       const node = this.betNodes.get(seat.seat);
       if (!node) continue;
-      const point = betPoint(seat.seat, total);
+      const point = betPoint(displayIndex(seat.seat), total);
       node.style.setProperty('--x', `${point.x}%`);
       node.style.setProperty('--y', `${point.y}%`);
     }

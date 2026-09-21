@@ -1,10 +1,10 @@
 import { $ } from './dom.js';
-import { api, connectEvents } from './api.js';
+import { api, connectEvents, restoreAuth, setAuth, clearAuth, clearInviteParams, getAuth } from './api.js';
 import { TableView } from './tableView.js';
 import { Hud } from './hud.js';
 import { SettingsDialog } from './settings.js';
+import { Lobby } from './lobby.js';
 import { sfx, unlockAudio } from './sound.js';
-import { fmt } from './format.js';
 
 const refs = {
   topbarStats: $('#topbar-stats'),
@@ -19,6 +19,7 @@ const refs = {
   toasts: $('#toasts'),
   modelPill: $('#model-pill'),
   modalRoot: $('#modal-root'),
+  lobbyRoot: $('#lobby-root'),
 };
 
 const state = {
@@ -27,6 +28,9 @@ const state = {
   view: null,
   providers: [],
   roster: [],
+  room: null,
+  invites: [],
+  limits: null,
 };
 
 const tableView = new TableView({
@@ -42,8 +46,10 @@ const hud = new Hud({
   actions: {
     onAction: (action) => submitAction(action),
     onNextHand: () => nextHand(),
-    onRestart: () => restart(),
+    onRestart: () => restartSameRoom(),
+    onNewTable: () => openLobby(),
     onSettings: () => openSettings(),
+    onForce: (seat) => forceSeat(seat),
   },
 });
 
@@ -52,74 +58,66 @@ const settings = new SettingsDialog({
   providers: [],
   roster: [],
   onToast: (t) => hud.toast(t),
-  onSaved: async (config, { restart: shouldRestart }) => {
+  onSaved: async (config) => {
     state.config = config;
-    hud.renderModelPill(config);
-    if (shouldRestart || !state.view?.table) await restart();
+    hud.renderModelPill({ ...(state.runtime ?? {}), ...config });
+    if (lobby.isOpen) lobby.open({ config, roster: state.roster, limits: state.limits });
   },
 });
 
-// ------------------------------------------------------------------ sound
+const lobby = new Lobby({
+  root: refs.lobbyRoot,
+  onStart: (payload) => createRoom(payload),
+  onOpenSettings: () => openSettings(),
+});
 
-let soundState = { board: 0, pot: 0, phase: null, toAct: null, chips: 0 };
+// ------------------------------------------------------------------- sound
+
+let soundState = { board: 0, chips: 0, phase: null, toAct: null };
 
 function directSound(table) {
-  if (!table) {
-    soundState = { board: 0, pot: 0, phase: null, toAct: null, chips: 0 };
+  if (!table?.seats) {
+    soundState = { board: 0, chips: 0, phase: null, toAct: null };
     return;
   }
   const chips = table.seats.reduce((sum, s) => sum + s.totalCommitted, 0);
   if (table.board.length > soundState.board) sfx.deal();
   if (chips > soundState.chips) sfx.chip();
   if (table.phase === 'handover' && soundState.phase !== 'handover') {
-    const me = table.seats.find((s) => s.seat === table.viewerSeat);
     const won = (table.handResult?.awards ?? []).some((a) => a.seat === table.viewerSeat);
     if (won) sfx.win();
-    else if (me && !me.folded) sfx.lose();
+    else sfx.lose();
   }
   if (table.toAct === table.viewerSeat && soundState.toAct !== table.viewerSeat && table.phase === 'playing') {
     sfx.turn();
   }
-  soundState = { board: table.board.length, pot: table.potTotal, phase: table.phase, toAct: table.toAct, chips };
+  soundState = { board: table.board.length, chips, phase: table.phase, toAct: table.toAct };
 }
 
 // ------------------------------------------------------------------ render
 
 function apply(view) {
   state.view = view;
-  const table = view?.table ?? null;
-  // `view.config` is the runtime view (provider/model/ready); the full config
-  // lives in state.config and keeps fields the server never sends back.
+  const table = view && Array.isArray(view.seats) ? view : null;
   if (view?.config) state.runtime = view.config;
   const runtime = state.runtime ?? state.config ?? {};
 
   hud.renderTopbar(table);
   hud.renderModelPill(runtime);
-  tableView.render(view);
+  tableView.render(table);
   hud.renderFeed(table);
-  hud.renderActionBar(view);
+  hud.renderActionBar(table);
 
   if (table) {
     if (table.phase === 'gameover') hud.showGameOver(table);
     else if (table.phase === 'handover') hud.showHandResult(table);
     else hud.clearOverlay();
-  } else if (!runtime.ready) {
-    hud.showLocked(view?.error);
-  } else {
-    hud.clearOverlay();
   }
-
-  if (view?.error) hud.toast({ level: 'error', message: view.error, ttl: 8000 });
   directSound(table);
 }
 
 // ------------------------------------------------------------------ actions
 
-/**
- * Serialise every server round-trip. This keeps a click from interleaving with
- * an in-flight request, and guarantees that "save and restart" is never
- * silently dropped just because an AI turn or an auto-advance was running.
- */
 let chain = Promise.resolve();
 let busy = false;
 
@@ -132,7 +130,6 @@ function queue(task) {
   return run;
 }
 
-/** Run only if nothing else is in flight — used for repeat-clickable controls. */
 async function runIfIdle(task) {
   if (busy) return false;
   busy = true;
@@ -159,33 +156,112 @@ async function nextHand() {
   await runIfIdle(async () => {
     hud.clearOverlay();
     try {
-      apply(await api.nextHand(0));
+      apply(await api.nextHand());
     } catch (err) {
       hud.toast({ level: 'error', message: err.message });
     }
   });
 }
 
-/** Always queued, never dropped: waits for whatever is in flight, then rebuilds. */
-async function restart() {
-  hud.clearOverlay();
-  await queue(async () => {
+async function forceSeat(seat) {
+  await runIfIdle(async () => {
     try {
-      const cfg = state.config ?? (await api.bootstrap()).config;
-      apply(await api.newGame(cfg.table));
+      apply(await api.force(seat));
     } catch (err) {
-      hud.toast({ level: 'error', message: `开局失败：${err.message}` });
+      hud.toast({ level: 'error', message: err.message });
     }
   });
+}
+
+/** Restart the SAME room: same seats, same invite links, fresh stacks. */
+async function restartSameRoom() {
+  await runIfIdle(async () => {
+    try {
+      apply(await api.restart());
+      hud.toast({ level: 'success', message: '已重新开始' });
+    } catch (err) {
+      hud.toast({ level: 'error', message: err.message });
+    }
+  });
+}
+
+// -------------------------------------------------------------------- rooms
+
+async function createRoom(payload) {
+  try {
+    const result = await api.createRoom(payload);
+    setAuth(result.roomId, result.token);
+    clearInviteParams();
+    state.room = result.room;
+    state.invites = result.invites ?? [];
+    lobby.close();
+    connect();
+    apply(result.state ?? (await api.room()).state);
+    hud.toast({ level: 'success', message: `牌局 ${result.roomId} 已创建` });
+    if ((result.invites ?? []).length > 1) {
+      hud.toast({ level: 'info', message: '点右上角「邀请」把链接发给朋友', ttl: 7000 });
+    }
+  } catch (err) {
+    hud.toast({ level: 'error', message: `建桌失败：${err.message}` });
+    throw err;
+  }
+}
+
+async function joinExisting() {
+  try {
+    const info = await api.room();
+    state.room = info.room;
+    state.invites = info.invites ?? [];
+    lobby.close();
+    connect();
+    apply(info.state);
+    if (!info.isHost) hud.toast({ level: 'success', message: `已入座：${info.room.seats[info.seat]?.name ?? ''}` });
+  } catch (err) {
+    clearAuth();
+    hud.toast({ level: 'error', message: err.message, ttl: 8000 });
+    openLobby();
+  }
+}
+
+function openLobby() {
+  closeStream();
+  state.room = null;
+  state.view = null;
+  tableView.render(null);
+  hud.renderTopbar(null);
+  hud.renderActionBar(null);
+  hud.renderFeed(null);
+  hud.clearOverlay();
+  lobby.open({ config: state.config, roster: state.roster, limits: state.limits });
 }
 
 function openSettings() {
   settings.open(state.config);
 }
 
-// -------------------------------------------------------------------- boot
+// --------------------------------------------------------------------- SSE
 
+let disposeStream = null;
 let connBanner = null;
+
+function connect() {
+  closeStream();
+  disposeStream = connectEvents({
+    onState: (view) => apply(view),
+    onOpen: hideConnBanner,
+    onError: showConnBanner,
+    onAiError: (payload) => {
+      sfx.error();
+      hud.toast({ level: 'error', message: `${payload.name} 决策失败：${payload.message}`, ttl: 9000 });
+    },
+    onToast: (payload) => hud.toast({ level: payload.level ?? 'info', message: payload.message }),
+  });
+}
+
+function closeStream() {
+  disposeStream?.();
+  disposeStream = null;
+}
 
 function showConnBanner() {
   if (connBanner) return;
@@ -200,39 +276,28 @@ function hideConnBanner() {
   connBanner = null;
 }
 
+// -------------------------------------------------------------------- boot
+
 async function boot() {
   try {
     const data = await api.bootstrap();
     state.config = data.config;
     state.providers = data.providers;
     state.roster = data.roster;
+    state.limits = data.limits;
     settings.providers = data.providers;
     settings.roster = data.roster;
+    hud.renderModelPill(data.config);
 
-    apply(data.state);
-
-    connectEvents({
-      onState: (view) => apply(view),
-      onOpen: hideConnBanner,
-      onError: showConnBanner,
-      onAiError: (payload) => {
-        sfx.error();
-        hud.toast({
-          level: 'error',
-          message: `${payload.name} 决策失败：${payload.message}`,
-          ttl: 9000,
-        });
-      },
-      onToast: (payload) => hud.toast({ level: payload.level ?? 'info', message: payload.message }),
-    });
-
-    if (!data.state?.table) {
-      if (data.config.ready) await restart();
-      else hud.showLocked();
+    const restored = restoreAuth();
+    if (restored.token) {
+      await joinExisting();
+    } else {
+      openLobby();
     }
   } catch (err) {
     hud.toast({ level: 'error', message: `初始化失败：${err.message}`, ttl: 0 });
-    showConnBanner();
+    openLobby();
   }
 }
 
@@ -243,9 +308,22 @@ $('#btn-settings').addEventListener('click', () => {
   openSettings();
 });
 
+$('#btn-invite').addEventListener('click', async () => {
+  unlockAudio();
+  try {
+    const result = await api.invites();
+    state.invites = result.invites ?? [];
+    hud.showInvites({ roomId: state.room?.id ?? getAuth().room, invites: state.invites, players: state.room?.seats });
+  } catch (err) {
+    hud.toast({ level: 'error', message: err.message });
+  }
+});
+
 $('#btn-restart').addEventListener('click', () => {
   unlockAudio();
-  restart();
+  // Changing the number of seats means a new table (and new invite links),
+  // so this opens the setup screen rather than silently reusing the room.
+  openLobby();
 });
 
 $('#btn-new-hand').addEventListener('click', () => {
@@ -253,18 +331,12 @@ $('#btn-new-hand').addEventListener('click', () => {
   nextHand();
 });
 
-document.addEventListener(
-  'pointerdown',
-  () => {
-    unlockAudio();
-  },
-  { once: true },
-);
+document.addEventListener('pointerdown', () => unlockAudio(), { once: true });
 
 document.addEventListener('keydown', (event) => {
-  if (settings.isOpen) return;
+  if (settings.isOpen || lobby.isOpen) return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
-  const table = state.view?.table;
+  const table = state.view && Array.isArray(state.view.seats) ? state.view : null;
   if (!table || table.phase !== 'playing' || table.toAct !== table.viewerSeat) {
     if (event.code === 'Space' && table && table.phase === 'handover') {
       event.preventDefault();
@@ -287,7 +359,17 @@ document.addEventListener('keydown', (event) => {
 
 setInterval(() => {
   tableView.tick();
-  hud.renderFeed(state.view?.table);
+  if (state.view && !lobby.isOpen) hud.renderFeed(state.view);
 }, 700);
+
+setInterval(() => {
+  if (!state.room) return;
+  api
+    .room()
+    .then((info) => {
+      state.room = info.room;
+    })
+    .catch(() => {});
+}, 5000);
 
 boot();

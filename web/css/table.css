@@ -454,6 +454,12 @@
   color: #a8d0ff;
 }
 
+.tag--offline {
+  background: rgba(240, 178, 74, 0.14);
+  border-color: rgba(240, 178, 74, 0.36);
+  color: #ffd894;
+}
+
 .seat__badges {
   display: flex;
   gap: 4px;

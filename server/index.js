@@ -1,27 +1,63 @@
 import http from 'node:http';
+import os from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, saveConfig, publicConfig, configPath, ROOT } from './config.js';
 import { providerCatalog, testProvider, fetchModels } from './providers/index.js';
 import { roster } from './ai/personalities.js';
-import { SessionStore } from './sessions.js';
+import { RoomStore, ROOM_LIMITS } from './rooms.js';
 import { serveStatic } from './static.js';
 
 const WEB_ROOT = join(ROOT, 'web');
 const PORT = Number(process.env.PORT ?? 8787);
-const HOST = process.env.HOST ?? '127.0.0.1';
+// Bind to every interface so the table can be shared across the local network.
+const HOST = process.env.HOST ?? '0.0.0.0';
 const MAX_BODY = 512 * 1024;
-const SESSION_COOKIE = 'dezhou_sid';
+const ROOM_COOKIE = 'allin_room';
+const TOKEN_COOKIE = 'allin_token';
 
-const getConfig = () => loadConfig();
-// `ready` is derived on every read so live edits take effect immediately.
-const configWithReadiness = () => {
+// `ready` is derived on every read so live config edits take effect mid-hand.
+const getConfig = () => {
   const cfg = loadConfig();
   return { ...cfg, ready: publicConfig().ready };
 };
-
-const sessions = new SessionStore({ getConfig: configWithReadiness });
+const rooms = new RoomStore({ getConfig });
 
 // ------------------------------------------------------------------ helpers
+
+/** Non-loopback IPv4 addresses, best candidates first, for invite links. */
+function lanAddresses() {
+  const virtual = /^(utun|bridge|awdl|llw|lo|gif|stf|anpi|ap)\d/i;
+  const linkLocal = /^169\.254\./;
+  const benchmark = /^198\.(18|19)\./; // RFC 2544 range, used by tunnel interfaces
+  const physical = [];
+  const other = [];
+  for (const [iface, addrs] of Object.entries(os.networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.family !== 'IPv4' || addr.internal) continue;
+      if (linkLocal.test(addr.address) || benchmark.test(addr.address)) continue;
+      const entry = { iface, address: addr.address };
+      // Virtual interfaces are listed, but only if there is nothing better:
+      // a guest cannot reach a VPN tunnel or a VM bridge.
+      if (virtual.test(iface)) other.push(entry);
+      else physical.push(entry);
+    }
+  }
+  const ordered = [...physical.sort((a, b) => (/^en\d/i.test(b.iface) ? 1 : 0) - (/^en\d/i.test(a.iface) ? 1 : 0) || a.iface.localeCompare(b.iface))];
+  return ordered.length ? ordered : other;
+}
+
+const isLoopbackHost = (host) => /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host ?? '');
+
+/**
+ * The base URL a guest should open. If the host is browsing via localhost the
+ * link would be useless to anyone else, so fall back to the LAN address.
+ */
+function inviteBaseUrl(req) {
+  const host = req.headers.host ?? '';
+  if (host && !isLoopbackHost(host)) return `http://${host}`;
+  const lan = lanAddresses()[0];
+  return lan ? `http://${lan.address}:${PORT}` : `http://${host || `127.0.0.1:${PORT}`}`;
+}
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload, null, status >= 400 ? 2 : 0);
@@ -69,21 +105,40 @@ function parseCookies(header = '') {
   return out;
 }
 
-/** Resolve (or mint) the session for this request. */
-function sessionFor(req, res) {
-  const cookies = parseCookies(req.headers.cookie);
-  let id = cookies[SESSION_COOKIE];
-  const { id: sessionId, controller } = sessions.getOrCreate(id);
-  if (sessionId !== id) {
-    res.setHeader(
-      'Set-Cookie',
-      `${SESSION_COOKIE}=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`,
-    );
-  }
-  return controller;
+function setAuthCookies(res, roomId, token) {
+  const base = 'Path=/; HttpOnly; SameSite=Lax; Max-Age=86400';
+  res.setHeader('Set-Cookie', [`${ROOM_COOKIE}=${roomId}; ${base}`, `${TOKEN_COOKIE}=${token}; ${base}`]);
 }
 
-function sse(req, res, controller) {
+/** Which room/token this request carries. Query wins over cookie so a shared
+ *  link works on first open and then survives a refresh. */
+function resolveAuth(req, url) {
+  const cookies = parseCookies(req.headers.cookie);
+  const roomId = String(url.searchParams.get('room') || cookies[ROOM_COOKIE] || '').toUpperCase();
+  const token = url.searchParams.get('token') || cookies[TOKEN_COOKIE] || '';
+  return { roomId, token };
+}
+
+function requireSeat(req, url) {
+  const { roomId, token } = resolveAuth(req, url);
+  // A room code is optional: a seat token identifies the room on its own.
+  const room = rooms.get(roomId) ?? rooms.findByToken(token);
+  if (!room) throw Object.assign(new Error('牌局不存在或已结束'), { status: 404 });
+  const seat = room.seatForToken(token);
+  if (!seat) throw Object.assign(new Error('入场凭证无效，请用邀请链接重新进入'), { status: 403 });
+  return { room, seat, isHost: room.isHost(token) };
+}
+
+function inviteLinks(room, req) {
+  const base = inviteBaseUrl(req);
+  return room.humanSeats.map((seat) => ({
+    seat: seat.index,
+    name: seat.name,
+    url: `${base}/?room=${room.id}&seat=${seat.index}&token=${seat.token}`,
+  }));
+}
+
+function sse(req, res, controller, viewerSeat) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
@@ -96,12 +151,20 @@ function sse(req, res, controller) {
     try {
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     } catch {
-      /* the socket went away; the close handler will clean up */
+      /* the socket went away; close handler cleans up */
     }
   };
 
-  send('state', controller.view());
-  const unsubscribe = controller.subscribe(send);
+  // Each subscriber serialises its OWN view, so a seat can never receive
+  // another seat's private cards.
+  send('state', controller.view(viewerSeat));
+  const unsubscribe = controller.subscribe((event, payload) => {
+    if (event === 'state') send('state', controller.view(viewerSeat));
+    else send(event, payload);
+  });
+
+  controller.addConnection(viewerSeat);
+
   const ping = setInterval(() => {
     try {
       res.write(': ping\n\n');
@@ -113,23 +176,26 @@ function sse(req, res, controller) {
   req.on('close', () => {
     clearInterval(ping);
     unsubscribe();
+    controller.removeConnection(viewerSeat);
   });
 }
 
 // ------------------------------------------------------------------- routes
 
 const ROUTES = {
-  'GET /api/bootstrap': (req, res, controller) => {
+  'GET /api/bootstrap': (req, res) => {
     sendJson(res, 200, {
       config: publicConfig(),
       providers: providerCatalog(),
       roster: roster(),
+      limits: { ...ROOM_LIMITS },
+      lan: lanAddresses(),
+      inviteBase: inviteBaseUrl(req),
       configPath,
-      state: controller.view(),
     });
   },
 
-  'GET /api/state': (req, res, controller) => sendJson(res, 200, controller.view()),
+  'GET /api/state': (req, res, ctx) => sendJson(res, 200, ctx.room.controller.view(ctx.seat.index)),
 
   'GET /api/models': async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -144,11 +210,11 @@ const ROUTES = {
 
   'POST /api/config': async (req, res) => {
     const body = await readBody(req);
-    const saved = saveConfig(body);
-    sendJson(res, 200, { ok: true, config: publicConfig(), savedAt: saved ? Date.now() : null });
+    saveConfig(body);
+    sendJson(res, 200, { ok: true, config: publicConfig() });
   },
 
-  'POST /api/config/test': async (req, res, controller) => {
+  'POST /api/config/test': async (req, res) => {
     const body = await readBody(req);
     const live = loadConfig();
     const probe = {
@@ -162,57 +228,140 @@ const ROUTES = {
       sendJson(res, 200, { ok: false, error: '请先填写 Base URL 和模型名' });
       return;
     }
-    const result = await testProvider(probe, { sessionId: controller.sessionId });
-    sendJson(res, 200, result);
+    sendJson(res, 200, await testProvider(probe, { sessionId: 'connectivity-test' }));
   },
 
-  'POST /api/game/new': async (req, res, controller) => {
+  // ------------------------------------------------------------- lobby
+
+  'POST /api/room': async (req, res) => {
     const body = await readBody(req);
-    await controller.newGame(body);
-    sendJson(res, 200, controller.view());
+    const room = rooms.create({
+      seatCount: body.seats,
+      seats: body.players,
+      rules: body.rules ?? body,
+    });
+    const host = room.seatConfig[room.hostSeat];
+    setAuthCookies(res, room.id, host.token);
+
+    await room.controller.newGame();
+    sendJson(res, 200, {
+      ok: true,
+      roomId: room.id,
+      seat: host.index,
+      token: host.token,
+      room: room.describe(),
+      invites: inviteLinks(room, req),
+    });
   },
 
-  'POST /api/game/start': async (req, res, controller) => {
-    await controller.startHand();
-    sendJson(res, 200, controller.view());
-  },
-
-  'POST /api/game/next': async (req, res, controller) => {
+  'POST /api/room/join': async (req, res) => {
     const body = await readBody(req);
-    await controller.nextHand(Number(body.delayMs ?? 0));
-    sendJson(res, 200, controller.view());
+    const roomId = String(body.roomId ?? '').toUpperCase();
+    const room = rooms.get(roomId);
+    if (!room) {
+      sendJson(res, 404, { error: '找不到这个牌局，让房主重新发一次链接' });
+      return;
+    }
+    const seat = body.token
+      ? room.seatForToken(body.token)
+      : room.humanSeats.find((s) => !s.connected);
+    if (!seat) {
+      sendJson(res, 403, { error: '链接无效，或者这个座位已经被别人坐了' });
+      return;
+    }
+    setAuthCookies(res, room.id, seat.token);
+    sendJson(res, 200, {
+      ok: true,
+      roomId: room.id,
+      seat: seat.index,
+      token: seat.token,
+      room: room.describe(),
+      isHost: room.isHost(seat.token),
+    });
   },
 
-  'POST /api/game/action': async (req, res, controller) => {
+  'GET /api/room': (req, res, ctx) => {
+    sendJson(res, 200, {
+      ok: true,
+      roomId: ctx.room.id,
+      seat: ctx.seat.index,
+      isHost: ctx.isHost,
+      room: ctx.room.describe(),
+      invites: ctx.isHost ? inviteLinks(ctx.room, req) : [],
+      state: ctx.room.controller.view(ctx.seat.index),
+    });
+  },
+
+  'GET /api/room/invites': (req, res, ctx) => {
+    if (!ctx.isHost) {
+      sendJson(res, 403, { error: '只有房主可以查看邀请链接' });
+      return;
+    }
+    sendJson(res, 200, { ok: true, invites: inviteLinks(ctx.room, req) });
+  },
+
+  'POST /api/room/restart': async (req, res, ctx) => {
+    if (!ctx.isHost) {
+      sendJson(res, 403, { error: '只有房主可以重开一局' });
+      return;
+    }
+    await ctx.room.controller.newGame();
+    sendJson(res, 200, ctx.room.controller.view(ctx.seat.index));
+  },
+
+  // ------------------------------------------------------------ gameplay
+
+  'POST /api/room/action': async (req, res, ctx) => {
     const body = await readBody(req);
     if (!body || typeof body.action !== 'string') {
       sendJson(res, 400, { error: '缺少 action 字段' });
       return;
     }
-    await controller.humanAction({ action: body.action, amount: body.amount });
-    sendJson(res, 200, controller.view());
+    await ctx.room.controller.humanAction(ctx.seat.index, { action: body.action, amount: body.amount });
+    sendJson(res, 200, ctx.room.controller.view(ctx.seat.index));
   },
 
-  'POST /api/game/retry': async (req, res, controller) => {
-    await controller.retryCurrentAI();
-    sendJson(res, 200, controller.view());
+  'POST /api/room/next': async (req, res, ctx) => {
+    await ctx.room.controller.nextHand();
+    sendJson(res, 200, ctx.room.controller.view(ctx.seat.index));
   },
 
-  'POST /api/game/cancel': (req, res, controller) => {
-    controller.cancelAI();
+  'POST /api/room/force': async (req, res, ctx) => {
+    if (!ctx.isHost) {
+      sendJson(res, 403, { error: '只有房主可以托管' });
+      return;
+    }
+    const body = await readBody(req);
+    await ctx.room.controller.forceAction(Number(body.seat));
+    sendJson(res, 200, ctx.room.controller.view(ctx.seat.index));
+  },
+
+  'POST /api/room/retry': async (req, res, ctx) => {
+    await ctx.room.controller.retryCurrentAI();
+    sendJson(res, 200, ctx.room.controller.view(ctx.seat.index));
+  },
+
+  'POST /api/room/cancel': (req, res, ctx) => {
+    ctx.room.controller.cancelAI();
     sendJson(res, 200, { ok: true });
-  },
-
-  'POST /api/game/reset': (req, res, controller) => {
-    controller.cancelAI();
-    controller.table = null;
-    controller.lastError = null;
-    controller.broadcast();
-    sendJson(res, 200, controller.view());
   },
 };
 
 // -------------------------------------------------------------------- server
+
+// Routes that need a validated seat before they may run. Everything else under
+// /api/room is public (creating or joining a room).
+const ROOM_SCOPED = new Set([
+  'GET /api/state',
+  'GET /api/room',
+  'GET /api/room/invites',
+  'POST /api/room/restart',
+  'POST /api/room/action',
+  'POST /api/room/next',
+  'POST /api/room/force',
+  'POST /api/room/retry',
+  'POST /api/room/cancel',
+]);
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
@@ -220,14 +369,27 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (key === 'GET /api/events') {
-      sse(req, res, sessionFor(req, res));
+      const { roomId, token } = resolveAuth(req, url);
+      const room = rooms.get(roomId);
+      const seat = room?.seatForToken(token);
+      if (!room || !seat) {
+        sendJson(res, 403, { error: '牌局不存在或凭证无效' });
+        return;
+      }
+      sse(req, res, room.controller, seat.index);
       return;
     }
 
     const handler = ROUTES[key];
     if (handler) {
-      const controller = sessionFor(req, res);
-      await handler(req, res, controller);
+      if (ROOM_SCOPED.has(key)) {
+        const ctx = requireSeat(req, url);
+        // A link brought us here: persist it so a refresh keeps working.
+        if (url.searchParams.get('token')) setAuthCookies(res, ctx.room.id, url.searchParams.get('token'));
+        await handler(req, res, ctx);
+      } else {
+        await handler(req, res);
+      }
       return;
     }
 
@@ -236,8 +398,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === 'GET' || req.method === 'HEAD') {
-      if (serveStatic(WEB_ROOT, url.pathname, req, res)) return;
+    if ((req.method === 'GET' || req.method === 'HEAD') && serveStatic(WEB_ROOT, url.pathname, req, res)) {
+      return;
     }
 
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -246,10 +408,7 @@ const server = http.createServer(async (req, res) => {
     const status = err?.status ?? (err?.name === 'GameError' ? 400 : 500);
     if (status >= 500) console.error(`[${key}]`, err);
     if (!res.headersSent) {
-      sendJson(res, status, {
-        error: err?.message ?? '服务器内部错误',
-        code: err?.code ?? null,
-      });
+      sendJson(res, status, { error: err?.message ?? '服务器内部错误', code: err?.code ?? null });
     } else {
       res.end();
     }
@@ -258,17 +417,31 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   const cfg = publicConfig();
+  const lan = lanAddresses();
+  const loopbackOnly = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1';
   console.log('');
-  console.log('  ♠ ♥ 德州扑克 · 由 LLM 扮演对手 ♦ ♣');
-  console.log(`  → http://${HOST}:${PORT}`);
+  console.log('  ♠ ♥ allin · 德州扑克，对手是 LLM  ♦ ♣');
+  console.log('');
+  console.log(`  本机   → http://localhost:${PORT}`);
+  if (loopbackOnly) {
+    console.log('');
+    console.log('  ⚠ HOST 绑定在回环地址上，同网络的其他人打不开邀请链接。');
+    console.log('    想让朋友入座，请用 HOST=0.0.0.0 启动。');
+  } else {
+    for (const { iface, address } of lan) {
+      console.log(`  局域网 → http://${address}:${PORT}   (${iface})`);
+    }
+    if (lan.length === 0) console.log('  （没检测到局域网地址，暂时只有本机能访问）');
+  }
   console.log('');
   console.log(`  供应商 : ${cfg.provider}`);
-  console.log(`  端点   : ${cfg.baseUrl || '(未配置)'}`);
   console.log(`  模型   : ${cfg.model || '(未配置)'}`);
-  console.log(`  API Key: ${cfg.hasApiKey ? `已配置 (${cfg.apiKeyHint}${cfg.apiKeySource ? ` via ${cfg.apiKeySource}` : ''})` : '未配置 — 打开页面右上角「设置」填写'}`);
+  console.log(`  API Key: ${cfg.hasApiKey ? `已配置 (${cfg.apiKeyHint})` : '未配置 — 打开页面右上角「设置」填写'}`);
   console.log(`  设置   : ${configPath}`);
   console.log('');
 });
+
+setInterval(() => rooms.sweep(), 10 * 60 * 1000).unref();
 
 const shutdown = () => {
   server.close(() => process.exit(0));

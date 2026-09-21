@@ -29,10 +29,10 @@ const EXAMPLE = `# 示例
 
 export function buildSystemPrompt({ personality, tableTalk = true, reasoning = true }) {
   const talkLine = tableTalk
-    ? '7. table_talk 是你对牌桌说的话，请符合你的角色口吻（可以挑衅、抱怨、装傻或沉默——留空字符串表示不说话）。'
+    ? '7. table_talk 是你对牌桌说的话，请符合你的角色口吻（可以挑衅、抱怨、装傻、甚至虚张声势——留空字符串表示不说话）。但不要直接念出自己的底牌。'
     : '7. 把 table_talk 留为空字符串，保持沉默。';
   const reasoningLine = reasoning
-    ? '8. reasoning 用中文，简短但要有信息量，会显示给人类玩家看。'
+    ? '8. reasoning 用中文，简短但要有信息量。这段推理对手看不到，只会在本手结束后用于复盘。'
     : '8. reasoning 保持极简，几个字即可。';
 
   return `你正在参加一场无限注德州扑克（No-Limit Texas Hold'em）牌局。你是一位固定的角色，必须始终以这个角色的性格和打法做决定。
@@ -44,6 +44,10 @@ export function buildSystemPrompt({ personality, tableTalk = true, reasoning = t
 # 你的打法设定
 ${personality.style}
 
+# 信息边界
+你只知道公共信息，以及自己的底牌。别的玩家在想什么、手里是什么牌，你一概不知道。
+你唯一的依据是：公共牌、各家的筹码与下注历史、位置、以及你自己的底牌。
+
 ${SYSTEM_RULES}
 ${talkLine}
 ${reasoningLine}
@@ -51,10 +55,17 @@ ${reasoningLine}
 ${EXAMPLE}`;
 }
 
+/**
+ * Only public table events may reach a model. Anything a specific player said
+ * or thought stays out: an opponent's reasoning names their holding, so feeding
+ * it forward would leak private cards between AI seats.
+ */
+const PRIVATE_KINDS = new Set(['system', 'reason', 'talk', 'error']);
+
 function actionHistory(table) {
   const byStreet = new Map();
   for (const entry of table.handLog) {
-    if (entry.kind === 'system') continue;
+    if (PRIVATE_KINDS.has(entry.kind)) continue;
     const key = entry.street ?? 'preflop';
     if (!byStreet.has(key)) byStreet.set(key, []);
     byStreet.get(key).push(entry);

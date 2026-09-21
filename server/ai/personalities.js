@@ -93,6 +93,18 @@ export const PERSONALITIES = [
 你没有特别偏激的倾向——这正是你的强大之处。`,
     talk: ['我看看。', '我加注。', '这个尺度你舒服吗？', '我弃牌。'],
   },
+  {
+    id: 'ada',
+    name: '艾达',
+    title: '冰点',
+    avatar: '🧊',
+    tagline: '情绪恒为零。只做频率正确的决定。',
+    style: `你是冷酷的平衡型玩家，按范围而不是按具体牌思考。你会为每个决策点构建混合策略，
+用大致固定的频率在"下注/过牌"和"跟注/弃牌"之间随机化，让对手无法从你的行动里读出任何信息。
+你不情绪化、不报复、不追损。你的下注尺度高度标准化（底池的 33% / 66% / 100% 三档），
+因为尺度本身也在传递信息。你从不为了一手牌偏离既定策略，也从不解释自己。`,
+    talk: ['频率正确即可。', '这手牌在我的范围里。', '我跟。', '弃。'],
+  },
 ];
 
 export const HUMAN = {
@@ -105,14 +117,6 @@ export const HUMAN = {
 
 export function personalityById(id) {
   return PERSONALITIES.find((p) => p.id === id) ?? PERSONALITIES[0];
-}
-
-/** Pick a spread of opponents for a table of `n` seats (human + n-1 AI). */
-export function lineupFor(n) {
-  const order = ['ivan', 'biao', 'jiu', 'lisa', 'nana', 'kongming', 'wei'];
-  const picked = [];
-  for (let i = 0; i < Math.max(0, n - 1); i++) picked.push(personalityById(order[i % order.length]));
-  return picked;
 }
 
 export function roster() {

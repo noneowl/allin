@@ -185,7 +185,8 @@ export class PokerAgent {
         if (this.config.provider === DEMO_PROVIDER) {
           // Offline demo: no network, but the same JSON protocol and the same
           // validation below, so nothing about the real path is bypassed.
-          await sleep(500 + Math.random() * 900);
+          const delay = this.config.demoDelayMs ?? 500 + Math.random() * 900;
+          if (delay > 0) await sleep(delay);
           if (signal?.aborted) {
             throw new ProviderError('已取消', { code: 'ABORTED' });
           }

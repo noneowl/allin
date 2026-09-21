@@ -755,11 +755,13 @@ export class Table {
     const showdownBySeat = new Map((this.handResult?.showdown ?? []).map((s) => [s.seat, s]));
 
     return this.seats.map((s) => {
+      // Only the viewer's own seat is visible while a hand is live. Being human
+      // does NOT make a seat public: with several people at one table that
+      // would hand every player a look at everyone else's hole cards.
       const canSee =
-        s.isHuman ||
         s.seat === viewerSeat ||
-        (revealAll && !s.folded && s.hole.length > 0) ||
-        s.revealed;
+        s.revealed ||
+        (revealAll && !s.folded && s.hole.length > 0);
       const show = showdownBySeat.get(s.seat);
       // Live hand name is only derived for cards this viewer is allowed to see,
       // so it can never leak a hidden opponent's holding.
@@ -794,6 +796,9 @@ export class Table {
 
   view(viewerSeat = null) {
     const legal = viewerSeat !== null && this.toAct === viewerSeat ? this.legalActions(viewerSeat) : [];
+    // Reasoning is sealed while the hand is live: the text never leaves the
+    // server, so it cannot leak an opponent's holding through devtools either.
+    const revealSecrets = this.phase !== 'playing';
     return {
       handId: this.handId,
       phase: this.phase,
@@ -815,7 +820,10 @@ export class Table {
       legalActions: legal,
       viewerSeat,
       handResult: this.handResult,
-      log: this.log.slice(-60),
+      log: this.log
+        .slice(-60)
+        .map((entry) => (entry.secret && !revealSecrets ? { ...entry, text: null, sealed: true } : entry)),
+      secretsRevealed: revealSecrets,
       running: this.phase === 'playing',
     };
   }

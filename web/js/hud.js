@@ -8,6 +8,7 @@ export class Hud {
     this.actions = actions;
     this.feedIds = new Set();
     this.lastFeedId = 0;
+    this.feedSealState = null;
     this.raiseValue = 0;
     this.decisionKey = null;
     this.liveNodes = new Map();
@@ -22,6 +23,8 @@ export class Hud {
   renderTopbar(table) {
     const host = this.refs.topbarStats;
     clear(host);
+    const roomId = table?.roomId;
+    if (roomId) host.appendChild(stat('牌局', roomId));
     if (!table) {
       host.appendChild(stat('状态', '未开局'));
       return;
@@ -29,8 +32,7 @@ export class Hud {
     host.appendChild(stat('盲注', `${table.smallBlind} / ${table.bigBlind}`));
     host.appendChild(stat('手数', `#${table.handId}`));
     host.appendChild(stat('阶段', table.phase === 'gameover' ? '已结束' : STREET_TEXT[table.street] ?? '—'));
-    const pot = stat('底池', fmt(table.potTotal), 'stat--pot');
-    host.appendChild(pot);
+    host.appendChild(stat('底池', fmt(table.potTotal), 'stat--pot'));
 
     const me = table.seats.find((s) => s.seat === table.viewerSeat);
     if (me) host.appendChild(stat('你的筹码', fmt(me.stack)));
@@ -123,7 +125,7 @@ export class Hud {
   }
 
   renderActionBar(state) {
-    const table = state?.table;
+    const table = state && Array.isArray(state.seats) ? state : null;
     const main = this.mainEl;
 
     if (!table) {
@@ -171,12 +173,23 @@ export class Hud {
     if (!isMyTurn) {
       const actor = table.seats.find((s) => s.seat === table.toAct);
       const thinking = actor && table.ai?.[actor.seat];
+      const offline = actor?.isHuman && !actor.connected;
       main.appendChild(
         el('div', { class: 'actionbar__wait' }, [
-          thinking ? el('span', { class: 'thinking__dots' }, [el('i'), el('i'), el('i')]) : el('span', { text: '⏳' }),
-          el('span', { text: actor ? `等待 ${actor.name} 行动…` : '等待中…' }),
+          thinking ? el('span', { class: 'thinking__dots' }, [el('i'), el('i'), el('i')]) : el('span', { text: offline ? '🔌' : '⏳' }),
+          el('span', { text: actor ? `等待 ${actor.name} 行动…${offline ? '（已离线）' : ''}` : '等待中…' }),
         ]),
       );
+      if (offline) {
+        main.appendChild(
+          el('button', {
+            class: 'btn btn--lg',
+            text: '代为过牌/弃牌',
+            title: '这位玩家已经断开连接，房主可以帮他行动，避免牌局卡住',
+            on: { click: () => this.actions.onForce(actor.seat) },
+          }),
+        );
+      }
       this.raisePanel.style.display = 'none';
       return;
     }
@@ -280,6 +293,18 @@ export class Hud {
     const host = this.refs.feed;
     const log = table?.log ?? [];
 
+    // When a hand ends the server unseals the reasoning, which rewrites
+    // entries we already rendered — so rebuild from scratch at that moment.
+    const sealState = Boolean(table?.secretsRevealed);
+    if (sealState !== this.feedSealState) {
+      this.feedSealState = sealState;
+      clear(host);
+      this.feedIds.clear();
+      this.lastFeedId = 0;
+      for (const [, node] of this.liveNodes) node.remove();
+      this.liveNodes.clear();
+    }
+
     if (!log.length) {
       if (this.lastFeedId !== 0) {
         clear(host);
@@ -319,6 +344,17 @@ export class Hud {
 
   #feedNode(entry) {
     if (entry.kind === 'reason') {
+      // The server withholds the text while the hand is live, so there is
+      // nothing here to leak even via devtools.
+      if (entry.sealed || !entry.text) {
+        return el('div', { class: 'ai-card ai-card--sealed' }, [
+          el('div', { class: 'ai-card__head' }, [
+            el('span', { class: 'ai-card__avatar', text: '🔒' }),
+            el('span', { text: `${entry.name ?? 'AI'} 正在思考` }),
+            el('span', { class: 'ai-card__meta', text: '本手结束后揭晓' }),
+          ]),
+        ]);
+      }
       const card = el('div', { class: 'ai-card' }, [
         el('div', { class: 'ai-card__head' }, [
           el('span', { class: 'ai-card__avatar', text: entry.avatar ?? '🤖' }),
@@ -443,6 +479,89 @@ export class Hud {
         }),
       ]),
     );
+  }
+
+  /** Invite links for every human seat, with copy buttons. */
+  showInvites({ roomId, invites, players }) {
+    if (this.inviteBackdrop) {
+      this.inviteBackdrop.remove();
+      this.inviteBackdrop = null;
+      return;
+    }
+
+    const rows = (invites ?? []).map((invite) => {
+      const player = players?.find((p) => p.index === invite.seat);
+      const url = el('div', { class: 'invite-row__url', text: invite.url });
+      const copy = el('button', {
+        class: 'btn',
+        type: 'button',
+        text: '复制',
+        on: {
+          click: async () => {
+            try {
+              await navigator.clipboard.writeText(invite.url);
+              this.toast({ level: 'success', message: `已复制 ${invite.name} 的邀请链接` });
+            } catch {
+              const range = document.createRange();
+              range.selectNodeContents(url);
+              const selection = window.getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              this.toast({ level: 'warn', message: '浏览器不允许自动复制，链接已选中，请按 ⌘C' });
+            }
+          },
+        },
+      });
+      return el('div', { class: `invite-row ${player && !player.connected ? 'invite-seat--offline' : ''}` }, [
+        el('div', { class: 'invite-row__who' }, [
+          el('span', { text: player?.avatar ?? '🙂' }),
+          el('span', { text: invite.name }),
+          player?.connected
+            ? el('span', { class: 'pill pill--green', text: '已入座' })
+            : el('span', { class: 'pill', text: '未入座' }),
+        ]),
+        url,
+        copy,
+      ]);
+    });
+
+    const modal = el('div', { class: 'modal' }, [
+      el('div', { class: 'modal__head' }, [
+        el('div', {}, [
+          el('div', { class: 'modal__title', text: '邀请入座' }),
+          el('div', { class: 'modal__sub', text: `牌局 ${roomId} · 同一个 WiFi 下的人打开链接即可入座` }),
+        ]),
+        el('button', {
+          class: 'modal__close',
+          type: 'button',
+          text: '✕',
+          on: { click: () => this.showInvites({}) },
+        }),
+      ]),
+      el('div', { class: 'modal__body' }, [
+        rows.length
+          ? el('div', { class: 'invite-list' }, rows)
+          : el('div', { class: 'hint', text: '这个牌局没有其他人类座位。下一局可以在建桌时把某个座位改成「人类」。' }),
+        el('div', {
+          class: 'hint',
+          text: '链接里带着该座位的专属凭证，只能看到自己的底牌。别把自己的链接发给别人，否则对方会用你的座位行动。',
+        }),
+      ]),
+    ]);
+
+    this.inviteBackdrop = el(
+      'div',
+      {
+        class: 'modal-backdrop',
+        on: {
+          click: (event) => {
+            if (event.target === this.inviteBackdrop) this.showInvites({});
+          },
+        },
+      },
+      [modal],
+    );
+    this.refs.modalRoot.appendChild(this.inviteBackdrop);
   }
 
   showHandResult(table) {
@@ -577,6 +696,11 @@ export class Hud {
             class: 'btn btn--primary btn--lg',
             text: '重开一局',
             on: { click: () => this.actions.onRestart() },
+          }),
+          el('button', {
+            class: 'btn btn--lg',
+            text: '改人数 / 换配置',
+            on: { click: () => this.actions.onNewTable() },
           }),
           el('button', {
             class: 'btn btn--lg',
