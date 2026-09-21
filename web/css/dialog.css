@@ -166,6 +166,16 @@
   color: var(--text-0);
 }
 
+.model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.model-picker .select {
+  font-family: var(--font);
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;

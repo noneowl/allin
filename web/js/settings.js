@@ -107,14 +107,7 @@ export class SettingsDialog {
       ),
     );
 
-    const datalistId = 'model-options';
-    const modelInput = this.#input('model', { placeholder: '例如 glm-5.3-flash' });
-    modelInput.setAttribute('list', datalistId);
-    const options = this.presetFor(this.draft.provider).models ?? [];
-    const datalist = el('datalist', { id: datalistId }, [
-      ...options.map((m) => el('option', { value: m.id, label: m.label ?? m.id })),
-      ...this.fetchedModels.map((m) => el('option', { value: m.id })),
-    ]);
+    const modelField = this.#modelField();
 
     const keyInput = this.#input('apiKey', {
       type: 'password',
@@ -155,9 +148,8 @@ export class SettingsDialog {
 
       el('div', { class: 'grid-2' }, [
         this.#field('Base URL', this.#input('baseUrl', { placeholder: 'https://example.com/v1' })),
-        this.#field('模型', modelInput, '可手动输入任意模型名'),
+        modelField,
       ]),
-      datalist,
       el('div', { class: 'field__row' }, [fetchButton, testButton]),
 
       this.#field(
@@ -251,6 +243,85 @@ export class SettingsDialog {
     );
 
     this.root.appendChild(this.backdrop);
+  }
+
+  /**
+   * Model picker: a real <select> of everything the provider offers, plus a
+   * free-text escape hatch.
+   *
+   * A <datalist> would be the obvious choice, but Chromium filters its dropdown
+   * by whatever is already in the box — with "glm-5.3-flash" typed in, that was
+   * the only entry a user could ever see or pick.
+   */
+  #modelField() {
+    const preset = this.presetFor(this.draft.provider);
+    const seen = new Set();
+    const options = [];
+    for (const model of preset.models ?? []) {
+      if (seen.has(model.id)) continue;
+      seen.add(model.id);
+      options.push({ id: model.id, label: model.label ?? model.id, note: model.note ?? '' });
+    }
+    for (const model of this.fetchedModels) {
+      if (seen.has(model.id)) continue;
+      seen.add(model.id);
+      options.push({ id: model.id, label: model.label ?? model.id, note: '来自接口' });
+    }
+
+    const CUSTOM = '__custom__';
+    const known = options.some((o) => o.id === this.draft.model);
+
+    const select = el(
+      'select',
+      { class: 'select' },
+      options.map((o) =>
+        el('option', {
+          value: o.id,
+          text: o.note ? `${o.label} · ${o.id} — ${o.note}` : `${o.label} · ${o.id}`,
+        }),
+      ).concat([el('option', { value: CUSTOM, text: '✎ 自定义（手动输入模型名）' })]),
+    );
+    select.value = known ? this.draft.model : CUSTOM;
+
+    const customInput = el('input', {
+      class: 'input',
+      value: known ? '' : this.draft.model ?? '',
+      placeholder: '例如 glm-5.3-flash',
+      autocomplete: 'off',
+      spellcheck: 'false',
+    });
+    customInput.style.display = known ? 'none' : '';
+
+    const hint = el('span', { class: 'hint' });
+    const refreshHint = () => {
+      const match = options.find((o) => o.id === this.draft.model);
+      if (match) hint.textContent = match.note || `当前使用 ${match.id}`;
+      else if (this.draft.model) hint.textContent = `自定义模型：${this.draft.model}`;
+      else hint.textContent = '输入任意模型名';
+    };
+    refreshHint();
+
+    select.addEventListener('change', () => {
+      if (select.value === CUSTOM) {
+        customInput.style.display = '';
+        this.draft.model = customInput.value.trim();
+        customInput.focus();
+      } else {
+        customInput.style.display = 'none';
+        this.draft.model = select.value;
+      }
+      refreshHint();
+    });
+    customInput.addEventListener('input', () => {
+      this.draft.model = customInput.value.trim();
+      refreshHint();
+    });
+
+    return el('label', { class: 'field' }, [
+      el('span', { class: 'field__label', text: '模型' }),
+      el('div', { class: 'model-picker' }, [select, customInput]),
+      hint,
+    ]);
   }
 
   #numberSelect(key, values) {
