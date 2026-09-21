@@ -251,24 +251,33 @@ export class GameController {
       });
   }
 
-  /** A line typed by a human at the table. Public by definition. */
-  say(seatIndex, text, { handId = null } = {}) {
-    return this.enqueue(async () => {
-      const table = this.requireTable();
-      const seat = table.seats[seatIndex];
-      if (!seat || !seat.isHuman) throw new GameError('只有人类座位可以发言', 'NOT_HUMAN');
-      const clean = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
-      if (!clean) return null;
-      const entry = table.addLog({
-        seat: seatIndex,
-        name: seat.name,
-        kind: 'talk',
-        text: clean,
-        ...(handId ? { handId } : {}),
-      });
-      this.broadcast();
-      return entry;
+  /**
+   * A line typed by a human at the table. Public by definition.
+   *
+   * Deliberately NOT put through `enqueue`: that queue is held for the whole of
+   * an AI turn (a multi-second request, and `driveAI` covers every consecutive
+   * AI seat in one task), so routing speech through it meant a message typed
+   * while a model was thinking would hang until the hand moved on — and the
+   * input box had already cleared, so it looked like it vanished.
+   *
+   * Speaking only appends to the log and broadcasts; it never touches game
+   * state, so it does not need serialising. Whoever decides NEXT will read it.
+   */
+  say(seatIndex, text) {
+    const table = this.table;
+    if (!table) throw new GameError('牌桌还没有创建', 'NO_TABLE');
+    const seat = table.seats[seatIndex];
+    if (!seat || !seat.isHuman) throw new GameError('只有人类座位可以发言', 'NOT_HUMAN');
+    const clean = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+    if (!clean) return null;
+    const entry = table.addLog({
+      seat: seatIndex,
+      name: seat.name,
+      kind: 'talk',
+      text: clean,
     });
+    this.broadcast();
+    return entry;
   }
 
   /**

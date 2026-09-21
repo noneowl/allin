@@ -20,6 +20,7 @@ const refs = {
   modelPill: $('#model-pill'),
   modalRoot: $('#modal-root'),
   resultPanel: $('#result-panel'),
+  drawerBackdrop: $('#drawer-backdrop'),
   lobbyRoot: $('#lobby-root'),
 };
 
@@ -33,6 +34,9 @@ const state = {
   invites: [],
   limits: null,
 };
+
+const sidebarEl = $('.sidebar');
+let lastResultHandId = null;
 
 const tableView = new TableView({
   seatsEl: refs.seats,
@@ -111,6 +115,13 @@ function apply(view) {
   hud.renderActionBar(table);
 
   hud.renderResultPanel(table);
+
+  // On a narrow window the sidebar is an off-canvas drawer; pop it open when a
+  // hand ends so the review screen is not missed.
+  if (table?.phase === 'handover' && table.handResult?.handId !== lastResultHandId) {
+    lastResultHandId = table.handResult?.handId ?? null;
+    if (window.matchMedia('(max-width: 1080px)').matches) setDrawer(true);
+  }
 
   if (table && table.phase === 'gameover') hud.showGameOver(table);
   else if (!table || table.phase !== 'gameover') hud.clearOverlay();
@@ -325,6 +336,19 @@ async function boot() {
 
 // --------------------------------------------------------------- bindings
 
+function setDrawer(open) {
+  sidebarEl?.classList.toggle('is-open', open);
+  const backdrop = refs.drawerBackdrop;
+  if (backdrop) backdrop.hidden = !open;
+}
+
+$('#btn-sidebar').addEventListener('click', () => {
+  unlockAudio();
+  setDrawer(!sidebarEl?.classList.contains('is-open'));
+});
+
+refs.drawerBackdrop?.addEventListener('click', () => setDrawer(false));
+
 $('#btn-settings').addEventListener('click', () => {
   unlockAudio();
   openSettings();
@@ -363,8 +387,11 @@ async function sendChat() {
   try {
     await api.say(text);
   } catch (err) {
-    hud.toast({ level: 'error', message: err.message });
+    // Put the text back so a failed send never eats what was typed.
+    input.value = text;
+    hud.toast({ level: 'error', message: `发言失败：${err.message}` });
   }
+  input.focus();
 }
 
 $('#chat-send').addEventListener('click', () => {

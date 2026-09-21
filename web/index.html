@@ -28,6 +28,9 @@
       <div class="topbar__stats" id="topbar-stats"></div>
 
       <div class="topbar__actions">
+        <button class="btn btn--ghost topbar__sidebar-toggle" id="btn-sidebar" title="实况 / 聊天">
+          <span class="btn__icon">💬</span> 实况
+        </button>
         <button class="btn btn--ghost" id="btn-invite" title="邀请同网络的朋友入座">邀请</button>
         <button class="btn btn--ghost" id="btn-new-hand" title="立即开始下一手">下一手</button>
         <button class="btn btn--ghost" id="btn-restart" title="重新建桌，可改人数和座位">新牌局</button>
@@ -82,6 +85,7 @@
     <footer class="actionbar" id="actionbar"></footer>
   </div>
 
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
   <div class="toasts" id="toasts"></div>
   <div id="modal-root"></div>
   <div id="lobby-root"></div>

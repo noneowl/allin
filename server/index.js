@@ -404,8 +404,8 @@ const ROUTES = {
 
   'POST /api/room/say': async (req, res, ctx) => {
     const body = await readBody(req);
-    await ctx.room.controller.say(ctx.seat.index, body.text);
-    sendJson(res, 200, { ok: true });
+    const entry = ctx.room.controller.say(ctx.seat.index, body.text);
+    sendJson(res, 200, { ok: true, entry: entry ? { id: entry.id, text: entry.text } : null });
   },
 
   'POST /api/room/force': async (req, res, ctx) => {

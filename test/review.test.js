@@ -43,6 +43,16 @@ function makeRoom(seats, configExtra = {}) {
   return { store, room };
 }
 
+/** Poll until a condition holds, so timing tests are not wall-clock sensitive. */
+async function waitFor(predicate, timeoutMs = 4000, step = 25) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, step));
+  }
+  return predicate();
+}
+
 /** Play a hand to completion, with the human always calling or checking. */
 async function playHand(room) {
   const table = room.controller.table;
@@ -214,7 +224,52 @@ test('a human line is length-capped and trimmed', async () => {
 test('an AI seat cannot speak through the say endpoint', async () => {
   const { room } = makeRoom([HUMAN('我'), AI('ivan')]);
   await room.controller.newGame();
-  await assert.rejects(() => room.controller.say(1, '我插一句'), /只有人类座位/);
+  // `say` is synchronous on purpose (see the speaker test below), so it throws
+  // rather than rejecting.
+  assert.throws(() => room.controller.say(1, '我插一句'), /只有人类座位/);
+});
+
+test('speaking works even while a model is mid-decision', async () => {
+  // Regression: `say` used to go through the same queue as the AI turn loop,
+  // which is held for a whole multi-second LLM call. A message typed while a
+  // model was thinking silently stalled until the hand moved on.
+  const { room } = makeRoom([HUMAN('我'), AI('ivan'), AI('biao')]);
+  await room.controller.newGame();
+
+  // Start a drive and do not await it: this is the "model is thinking" state.
+  const driving = room.controller.driveAI();
+
+  const started = Date.now();
+  const entry = room.controller.say(0, '趁你想的时候我说一句');
+  const elapsed = Date.now() - started;
+
+  assert.ok(entry, 'the line was recorded');
+  assert.equal(entry.text, '趁你想的时候我说一句');
+  assert.ok(elapsed < 50, `speaking must not wait on the AI turn loop (took ${elapsed}ms)`);
+  assert.ok(
+    room.controller.table.log.some((e) => e.kind === 'talk' && e.text === '趁你想的时候我说一句'),
+    'the line reached the table log immediately',
+  );
+
+  await driving;
+});
+
+test('a line spoken mid-hand reaches the NEXT deciding seat', async () => {
+  const { room } = makeRoom([HUMAN('我'), AI('ivan'), AI('biao')]);
+  await room.controller.newGame();
+  room.controller.say(0, '我手里是坚果，你别乱来');
+
+  // The prompt is built when a seat is about to act, so whatever was said
+  // before that moment must be visible to it.
+  const user = buildMessages({
+    table: room.controller.table,
+    seatIdx: 1,
+    personality: personalityById('ivan'),
+    tableTalk: true,
+    reasoning: true,
+    failures: [],
+  })[1].content;
+  assert.match(user, /我手里是坚果/);
 });
 
 // ----------------------------------------------------------- post-hand lines
@@ -224,8 +279,9 @@ test('AI seats comment on the result once the hand ends', async () => {
   await room.controller.newGame();
   const table = await playHand(room);
 
-  // Reactions are fired detached; give them a moment to land.
-  await new Promise((resolve) => setTimeout(resolve, 600));
+  // Reactions are fired detached and in parallel; wait for them rather than
+  // assuming a fixed delay (the suite runs test files concurrently).
+  await waitFor(() => table.log.filter((e) => e.kind === 'talk' && e.postHand).length >= 2);
 
   const reactions = table.log.filter((e) => e.kind === 'talk' && e.postHand);
   assert.ok(reactions.length >= 2, `expected remarks from both AI seats, got ${reactions.length}`);
@@ -243,7 +299,8 @@ test('post-hand remarks can be switched off', async () => {
   const { room } = makeRoom([HUMAN('我'), AI('ivan'), AI('biao')], { postHandTalk: false });
   await room.controller.newGame();
   const table = await playHand(room);
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  // Give the (disabled) reaction path every chance to run before asserting.
+  await new Promise((resolve) => setTimeout(resolve, 800));
   assert.equal(table.log.filter((e) => e.kind === 'talk' && e.postHand).length, 0);
 });
 

@@ -154,6 +154,7 @@
 /* Inline, not a modal: the whole point is that the table stays visible so the
    player can study everyone's cards after the hand. */
 .result-panel {
+  flex: 0 0 auto;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(28, 36, 31, 0.9), rgba(14, 20, 17, 0.9));
   padding: 11px 13px;
@@ -280,7 +281,9 @@
 
 /* ---------------------------------------------------------------- chat */
 .chat {
+  flex: 0 0 auto;
   display: flex;
+  align-items: center;
   gap: 7px;
   padding: 10px 12px;
   border-top: 1px solid var(--line);
