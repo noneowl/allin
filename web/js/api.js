@@ -96,6 +96,8 @@ export const api = {
   joinRoom: (roomId, token) => request('POST', '/api/room/join', { roomId, token }),
   room: () => request('GET', '/api/room', undefined, { scoped: true }),
   invites: () => request('GET', '/api/room/invites', undefined, { scoped: true }),
+  setSeat: (seat, type, personalityId) =>
+    request('POST', '/api/room/seat', { seat, type, personalityId }, { scoped: true }),
 
   action: (action) => request('POST', '/api/room/action', action, { scoped: true }),
   nextHand: () => request('POST', '/api/room/next', {}, { scoped: true }),

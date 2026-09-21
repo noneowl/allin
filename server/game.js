@@ -98,7 +98,22 @@ export class GameController {
     }));
   }
 
-  newGame() {
+  /**
+   * Run the AI loop as a queued follow-up task.
+   *
+   * HTTP handlers must not wait for this: with a real model a full AI-vs-AI
+   * hand takes minutes, and the browser would sit on a pending request the
+   * whole time. Going through `enqueue` still keeps it serialised with respect
+   * to player actions.
+   */
+  #scheduleDrive() {
+    this.enqueue(() => this.driveAI()).catch((err) => {
+      this.lastError = String(err?.message ?? err);
+      this.emit('toast', { level: 'error', message: `AI 回合循环异常：${this.lastError}` });
+    });
+  }
+
+  newGame({ waitForAI = true } = {}) {
     return this.enqueue(async () => {
       this.abortAll();
       const cfg = this.getConfig();
@@ -121,11 +136,12 @@ export class GameController {
       this.emit('game_new', { rules: this.rules });
       this.table.startHand();
       this.broadcast();
-      await this.driveAI();
+      if (waitForAI) await this.driveAI();
+      else this.#scheduleDrive();
     });
   }
 
-  nextHand() {
+  nextHand({ waitForAI = true } = {}) {
     return this.enqueue(async () => {
       const table = this.requireTable();
       if (table.phase === 'playing') return;
@@ -133,7 +149,8 @@ export class GameController {
       table.startHand();
       this.lastError = null;
       this.broadcast();
-      await this.driveAI();
+      if (waitForAI) await this.driveAI();
+      else this.#scheduleDrive();
     });
   }
 

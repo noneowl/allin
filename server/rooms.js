@@ -38,17 +38,23 @@ export function defaultSeatConfig(seatCount, hostName = '玩家') {
 
 /**
  * Validate and normalise a seat list coming from the lobby.
+ *
+ * `raw` may be omitted entirely (quick start): in that case the default line-up
+ * is used, which always puts a human in the first seat. A table with no human
+ * at all would be unable to respond to anyone and would block while the AIs
+ * played the whole hand among themselves.
+ *
  * Every seat ends up with its own access token, so a seat can be handed to a
  * different person (or device) without exposing anyone else's view.
  */
 export function normalizeSeatConfig(raw, seatCount) {
   const count = clamp(seatCount ?? raw?.length ?? 4, 2, MAX_SEATS, 4);
-  const fallback = defaultSeatConfig(count);
+  const defaults = defaultSeatConfig(count);
   const seats = [];
 
   for (let index = 0; index < count; index++) {
-    const input = Array.isArray(raw) ? raw[index] ?? {} : {};
-    const type = input.type === 'human' ? 'human' : 'ai';
+    const input = Array.isArray(raw) && raw[index] ? raw[index] : defaults[index];
+    const type = input.type === 'human' ? 'human' : index === 0 ? 'human' : 'ai';
     let name = typeof input.name === 'string' ? input.name.trim().slice(0, 16) : '';
     let avatar = typeof input.avatar === 'string' && input.avatar.trim() ? input.avatar.trim().slice(0, 4) : '';
     let personalityId = null;
@@ -67,7 +73,7 @@ export function normalizeSeatConfig(raw, seatCount) {
       index,
       type,
       name,
-      avatar: avatar || fallback[index].avatar,
+      avatar: avatar || defaults[index].avatar,
       personalityId,
       token: newSeatToken(),
       connected: false,

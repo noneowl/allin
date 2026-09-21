@@ -2,7 +2,8 @@
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  /* Must sit above the lobby (120): settings are reachable from there. */
+  z-index: 200;
   display: grid;
   place-items: center;
   padding: 24px;

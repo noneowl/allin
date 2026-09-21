@@ -16,6 +16,13 @@
     linear-gradient(180deg, var(--bg-1), var(--bg-0) 60%);
 }
 
+/* The lobby is a full-screen surface. Hiding the shell stops the table's many
+   backdrop-filter layers from compositing behind it, which otherwise drops the
+   page to a few frames per second and makes every animation crawl. */
+body.is-lobby .app {
+  display: none;
+}
+
 /* ---------------------------------------------------------------- topbar */
 .topbar {
   display: flex;

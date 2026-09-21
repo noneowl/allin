@@ -29,6 +29,9 @@ export class Lobby {
   }
 
   open({ config, roster, limits }) {
+    // Hiding the game shell behind the lobby is both a UX and a performance
+    // fix: the table's blur layers otherwise keep compositing underneath.
+    document.body.classList.add('is-lobby');
     this.config = config;
     this.roster = (roster ?? []).filter((r) => r.id !== 'you' && r.id !== 'human');
     this.limits = limits ?? { MIN_SEATS, MAX_SEATS };
@@ -43,6 +46,7 @@ export class Lobby {
   }
 
   close() {
+    document.body.classList.remove('is-lobby');
     clear(this.root);
   }
 
@@ -250,7 +254,7 @@ export class Lobby {
         el('button', {
           class: 'btn btn--lg',
           type: 'button',
-          text: '快速开始（4 人 · 全 AI）',
+          text: '快速开始（4 人桌 · 你 + 3 个 AI）',
           on: { click: () => this.#submit(true) },
         }),
         el('span', { class: 'spacer' }),

@@ -273,6 +273,47 @@
   background: rgba(240, 178, 74, 0.06);
 }
 
+.invite-row--claim {
+  border-style: dashed;
+}
+
+.invite-row__muted {
+  color: var(--text-3);
+  font-family: var(--font);
+  font-style: italic;
+  background: transparent;
+  border-color: transparent;
+}
+
+.invite-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  text-align: center;
+  padding: 26px 20px;
+  border-radius: 12px;
+  border: 1px dashed var(--line-strong);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.invite-empty__icon {
+  font-size: 30px;
+  opacity: 0.8;
+}
+
+.invite-empty__title {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.invite-empty__text {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-2);
+  max-width: 380px;
+}
+
 @media (max-width: 620px) {
   .seat-row {
     grid-template-columns: 30px 28px minmax(0, 1fr);

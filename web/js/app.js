@@ -50,6 +50,7 @@ const hud = new Hud({
     onNewTable: () => openLobby(),
     onSettings: () => openSettings(),
     onForce: (seat) => forceSeat(seat),
+    onClaimSeat: (seat) => claimSeat(seat),
   },
 });
 
@@ -161,6 +162,27 @@ async function nextHand() {
       hud.toast({ level: 'error', message: err.message });
     }
   });
+}
+
+/** Hand an AI seat to a person and show the freshly minted invite link. */
+async function claimSeat(seat) {
+  try {
+    const result = await api.setSeat(seat, 'human');
+    state.room = result.room;
+    state.invites = result.invites ?? [];
+    state.openSeats = result.openSeats ?? [];
+    await api.room().then((info) => { state.room = info.room; }).catch(() => {});
+    hud.showInvites({
+      roomId: state.room?.id,
+      invites: state.invites,
+      players: state.room?.seats,
+      openSeats: state.openSeats,
+      refresh: true,
+    });
+    hud.toast({ level: 'success', message: '已把座位让给真人，链接已生成' });
+  } catch (err) {
+    hud.toast({ level: 'error', message: err.message });
+  }
 }
 
 async function forceSeat(seat) {
@@ -311,9 +333,16 @@ $('#btn-settings').addEventListener('click', () => {
 $('#btn-invite').addEventListener('click', async () => {
   unlockAudio();
   try {
-    const result = await api.invites();
-    state.invites = result.invites ?? [];
-    hud.showInvites({ roomId: state.room?.id ?? getAuth().room, invites: state.invites, players: state.room?.seats });
+    const info = await api.room();
+    state.room = info.room;
+    state.invites = info.invites ?? [];
+    state.openSeats = info.openSeats ?? [];
+    hud.showInvites({
+      roomId: info.room?.id ?? getAuth().room,
+      invites: state.invites,
+      players: info.room?.seats,
+      openSeats: state.openSeats,
+    });
   } catch (err) {
     hud.toast({ level: 'error', message: err.message });
   }

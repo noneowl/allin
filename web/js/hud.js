@@ -481,14 +481,25 @@ export class Hud {
     );
   }
 
-  /** Invite links for every human seat, with copy buttons. */
-  showInvites({ roomId, invites, players }) {
-    if (this.inviteBackdrop) {
-      this.inviteBackdrop.remove();
-      this.inviteBackdrop = null;
-      return;
-    }
+  closeInvites() {
+    this.inviteBackdrop?.remove();
+    this.inviteBackdrop = null;
+  }
 
+  /** Invite links for the other human seats, plus AI seats you could hand over. */
+  showInvites(payload) {
+    if (this.inviteBackdrop) {
+      const sameRoom = this.inviteRoomId === payload?.roomId;
+      this.closeInvites();
+      // A second click on the toolbar button closes the panel; an explicit
+      // refresh (after converting a seat) reopens it with fresh data.
+      if (sameRoom && !payload?.refresh) return;
+    }
+    this.#openInvites(payload ?? {});
+  }
+
+  #openInvites({ roomId, invites, players, openSeats }) {
+    this.inviteRoomId = roomId;
     const rows = (invites ?? []).map((invite) => {
       const player = players?.find((p) => p.index === invite.seat);
       const url = el('div', { class: 'invite-row__url', text: invite.url });
@@ -525,6 +536,25 @@ export class Hud {
       ]);
     });
 
+    // AI seats the host can hand to a person — this is what makes "邀请"
+    // work on a table created with the quick-start defaults.
+    const claimable = (openSeats ?? []).map((seat) =>
+      el('div', { class: 'invite-row invite-row--claim' }, [
+        el('div', { class: 'invite-row__who' }, [
+          el('span', { text: seat.avatar }),
+          el('span', { text: seat.name }),
+          el('span', { class: 'pill', text: 'AI' }),
+        ]),
+        el('div', { class: 'invite-row__url invite-row__muted', text: '改成真人后会生成专属链接' }),
+        el('button', {
+          class: 'btn btn--primary',
+          type: 'button',
+          text: '邀请人坐这里',
+          on: { click: () => this.actions.onClaimSeat?.(seat.index) },
+        }),
+      ]),
+    );
+
     const modal = el('div', { class: 'modal' }, [
       el('div', { class: 'modal__head' }, [
         el('div', {}, [
@@ -535,16 +565,31 @@ export class Hud {
           class: 'modal__close',
           type: 'button',
           text: '✕',
-          on: { click: () => this.showInvites({}) },
+          on: { click: () => this.closeInvites() },
         }),
       ]),
       el('div', { class: 'modal__body' }, [
         rows.length
           ? el('div', { class: 'invite-list' }, rows)
-          : el('div', { class: 'hint', text: '这个牌局没有其他人类座位。下一局可以在建桌时把某个座位改成「人类」。' }),
+          : el('div', { class: 'invite-empty' }, [
+              el('div', { class: 'invite-empty__icon', text: '🪑' }),
+              el('div', { class: 'invite-empty__title', text: '还没有留给真人的座位' }),
+              el('div', {
+                class: 'invite-empty__text',
+                text: claimable.length
+                  ? '下面这些座位现在是 AI 在打。挑一个改成真人，就会生成属于他的邀请链接。'
+                  : '这一桌已经坐满了真人。',
+              }),
+            ]),
+        claimable.length
+          ? el('div', {}, [
+              el('div', { class: 'section-title', text: '把 AI 座位让给真人' }),
+              el('div', { class: 'invite-list' }, claimable),
+            ])
+          : null,
         el('div', {
           class: 'hint',
-          text: '链接里带着该座位的专属凭证，只能看到自己的底牌。别把自己的链接发给别人，否则对方会用你的座位行动。',
+          text: '改座位会重新发一手牌。每个人的链接只能给他自己用，链接里带着专属凭证 —— 对方只能看到自己的底牌，也只能操作自己的座位。',
         }),
       ]),
     ]);
@@ -555,7 +600,7 @@ export class Hud {
         class: 'modal-backdrop',
         on: {
           click: (event) => {
-            if (event.target === this.inviteBackdrop) this.showInvites({});
+            if (event.target === this.inviteBackdrop) this.closeInvites();
           },
         },
       },

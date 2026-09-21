@@ -3,8 +3,8 @@ import os from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, saveConfig, publicConfig, configPath, ROOT } from './config.js';
 import { providerCatalog, testProvider, fetchModels } from './providers/index.js';
-import { roster } from './ai/personalities.js';
-import { RoomStore, ROOM_LIMITS } from './rooms.js';
+import { roster, personalityById } from './ai/personalities.js';
+import { RoomStore, ROOM_LIMITS, newSeatToken } from './rooms.js';
 import { serveStatic } from './static.js';
 
 const WEB_ROOT = join(ROOT, 'web');
@@ -129,13 +129,38 @@ function requireSeat(req, url) {
   return { room, seat, isHost: room.isHost(token) };
 }
 
-function inviteLinks(room, req) {
+/**
+ * Invite links for the human seats, excluding the requester's own.
+ *
+ * Your own seat is not an invitation — sharing it would hand someone your
+ * chair — so it never appears in the list.
+ */
+function inviteLinks(room, req, excludeSeat = null) {
   const base = inviteBaseUrl(req);
-  return room.humanSeats.map((seat) => ({
-    seat: seat.index,
-    name: seat.name,
-    url: `${base}/?room=${room.id}&seat=${seat.index}&token=${seat.token}`,
-  }));
+  return room.humanSeats
+    .filter((seat) => seat.index !== excludeSeat)
+    .map((seat) => ({
+      seat: seat.index,
+      name: seat.name,
+      connected: seat.connected,
+      url: `${base}/?room=${room.id}&seat=${seat.index}&token=${seat.token}`,
+    }));
+}
+
+/**
+ * Seats currently occupied by an AI, which the host can hand to a person
+ * instead. This is what makes "invite someone" possible on a table that was
+ * created with the quick-start defaults (one human + N AI).
+ */
+function openSeats(room) {
+  return room.seatConfig
+    .filter((seat) => seat.type === 'ai')
+    .map((seat) => ({
+      index: seat.index,
+      name: seat.name,
+      avatar: seat.avatar,
+      personalityId: seat.personalityId,
+    }));
 }
 
 function sse(req, res, controller, viewerSeat) {
@@ -243,14 +268,14 @@ const ROUTES = {
     const host = room.seatConfig[room.hostSeat];
     setAuthCookies(res, room.id, host.token);
 
-    await room.controller.newGame();
+    await room.controller.newGame({ waitForAI: false });
     sendJson(res, 200, {
       ok: true,
       roomId: room.id,
       seat: host.index,
       token: host.token,
       room: room.describe(),
-      invites: inviteLinks(room, req),
+      invites: inviteLinks(room, req, host.index),
     });
   },
 
@@ -287,7 +312,8 @@ const ROUTES = {
       seat: ctx.seat.index,
       isHost: ctx.isHost,
       room: ctx.room.describe(),
-      invites: ctx.isHost ? inviteLinks(ctx.room, req) : [],
+      invites: ctx.isHost ? inviteLinks(ctx.room, req, ctx.seat.index) : [],
+      openSeats: ctx.isHost ? openSeats(ctx.room) : [],
       state: ctx.room.controller.view(ctx.seat.index),
     });
   },
@@ -297,7 +323,57 @@ const ROUTES = {
       sendJson(res, 403, { error: '只有房主可以查看邀请链接' });
       return;
     }
-    sendJson(res, 200, { ok: true, invites: inviteLinks(ctx.room, req) });
+    sendJson(res, 200, {
+      ok: true,
+      invites: inviteLinks(ctx.room, req, ctx.seat.index),
+      openSeats: openSeats(ctx.room),
+    });
+  },
+
+  /**
+   * Turn a seat into a human one (and back), so the host can invite somebody
+   * to an existing table instead of having to rebuild it from the lobby.
+   * The seat composition is part of the table, so a fresh hand is dealt.
+   */
+  'POST /api/room/seat': async (req, res, ctx) => {
+    if (!ctx.isHost) {
+      sendJson(res, 403, { error: '只有房主可以改座位' });
+      return;
+    }
+    const body = await readBody(req);
+    const index = Number(body.seat);
+    const seat = ctx.room.seatConfig[index];
+    if (!seat) {
+      sendJson(res, 404, { error: `没有 ${body.seat} 号座位` });
+      return;
+    }
+    if (index === ctx.room.hostSeat && body.type !== 'human') {
+      sendJson(res, 400, { error: '房主自己的座位不能改成 AI' });
+      return;
+    }
+    const type = body.type === 'human' ? 'human' : 'ai';
+    if (seat.type !== type) {
+      seat.type = type;
+      seat.connected = false;
+      if (type === 'human') {
+        // A brand new credential: the old AI seat never had one worth keeping.
+        seat.token = newSeatToken();
+        seat.personalityId = null;
+        if (!seat.name || /^AI /.test(seat.name)) seat.name = `玩家 ${index + 1}`;
+      } else {
+        const personality = personalityById(body.personalityId ?? seat.personalityId);
+        seat.personalityId = personality.id;
+        seat.name = personality.name;
+        seat.avatar = personality.avatar;
+      }
+      await ctx.room.controller.newGame({ waitForAI: false });
+    }
+    sendJson(res, 200, {
+      ok: true,
+      room: ctx.room.describe(),
+      invites: inviteLinks(ctx.room, req, ctx.seat.index),
+      openSeats: openSeats(ctx.room),
+    });
   },
 
   'POST /api/room/restart': async (req, res, ctx) => {
@@ -305,7 +381,7 @@ const ROUTES = {
       sendJson(res, 403, { error: '只有房主可以重开一局' });
       return;
     }
-    await ctx.room.controller.newGame();
+    await ctx.room.controller.newGame({ waitForAI: false });
     sendJson(res, 200, ctx.room.controller.view(ctx.seat.index));
   },
 
@@ -322,7 +398,7 @@ const ROUTES = {
   },
 
   'POST /api/room/next': async (req, res, ctx) => {
-    await ctx.room.controller.nextHand();
+    await ctx.room.controller.nextHand({ waitForAI: false });
     sendJson(res, 200, ctx.room.controller.view(ctx.seat.index));
   },
 
@@ -359,6 +435,7 @@ const ROOM_SCOPED = new Set([
   'POST /api/room/action',
   'POST /api/room/next',
   'POST /api/room/force',
+  'POST /api/room/seat',
   'POST /api/room/retry',
   'POST /api/room/cancel',
 ]);
