@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<title>德州扑克 · LLM 对手</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%99%A0%3C/text%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/css/tokens.css" />
+<link rel="stylesheet" href="/css/layout.css" />
+<link rel="stylesheet" href="/css/cards.css" />
+<link rel="stylesheet" href="/css/table.css" />
+<link rel="stylesheet" href="/css/hud.css" />
+<link rel="stylesheet" href="/css/dialog.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand__mark">♠</span>
+        <div class="brand__text">
+          <strong>德州扑克</strong>
+          <span>LLM 对手 · OpenCode Go</span>
+        </div>
+      </div>
+
+      <div class="topbar__stats" id="topbar-stats"></div>
+
+      <div class="topbar__actions">
+        <button class="btn btn--ghost" id="btn-new-hand" title="立即开始下一手">下一手</button>
+        <button class="btn btn--ghost" id="btn-restart" title="重新建桌">重开一局</button>
+        <button class="btn btn--primary" id="btn-settings">
+          <span class="btn__icon">⚙</span> 设置
+        </button>
+      </div>
+    </header>
+
+    <main class="stage">
+      <section class="table-area" id="table-area">
+        <div class="table-stage">
+          <div class="table">
+            <div class="table__rail">
+              <div class="table__felt">
+                <div class="table__watermark">TEXAS HOLD'EM</div>
+                <div class="table__center" id="table-center">
+                  <div class="street" id="street-badge"></div>
+                  <div class="board" id="board"></div>
+                  <div class="pot" id="pot-display"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="seats" id="seats"></div>
+          <div class="bets" id="bets"></div>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="sidebar__section">
+          <div class="sidebar__head">
+            <h2>牌桌实况</h2>
+            <span class="pill" id="model-pill">—</span>
+          </div>
+          <div class="feed" id="feed"></div>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="actionbar" id="actionbar"></footer>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+  <div id="modal-root"></div>
+
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>
