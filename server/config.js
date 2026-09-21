@@ -20,6 +20,8 @@ export const DEFAULT_CONFIG = {
   timeoutMs: 45000,
   tableTalk: true,
   reasoning: true,
+  // 每手结束后让每个 AI 用一句话点评结果（并行请求）
+  postHandTalk: true,
   showAiCards: false,
   table: {
     seats: 4,
@@ -96,6 +98,7 @@ export function saveConfig(patch) {
     timeoutMs: current.timeoutMs,
     tableTalk: current.tableTalk,
     reasoning: current.reasoning,
+    postHandTalk: current.postHandTalk,
     showAiCards: current.showAiCards,
     table: { ...current.table },
   };
@@ -107,6 +110,7 @@ export function saveConfig(patch) {
   if (patch.maxTokens !== undefined) next.maxTokens = clamp(Math.round(Number(patch.maxTokens)), 128, 8000, DEFAULT_CONFIG.maxTokens);
   if (patch.timeoutMs !== undefined) next.timeoutMs = clamp(Math.round(Number(patch.timeoutMs)), 3000, 180000, DEFAULT_CONFIG.timeoutMs);
   if (patch.tableTalk !== undefined) next.tableTalk = Boolean(patch.tableTalk);
+  if (patch.postHandTalk !== undefined) next.postHandTalk = Boolean(patch.postHandTalk);
   if (patch.reasoning !== undefined) next.reasoning = Boolean(patch.reasoning);
   if (patch.showAiCards !== undefined) next.showAiCards = Boolean(patch.showAiCards);
 
@@ -161,6 +165,7 @@ export function publicConfig() {
     timeoutMs: cfg.timeoutMs,
     tableTalk: cfg.tableTalk,
     reasoning: cfg.reasoning,
+    postHandTalk: cfg.postHandTalk,
     showAiCards: cfg.showAiCards,
     table: { ...cfg.table },
     hasApiKey: Boolean(cfg.apiKey),

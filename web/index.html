@@ -63,7 +63,18 @@
             <h2>牌桌实况</h2>
             <span class="pill" id="model-pill">—</span>
           </div>
+          <div class="result-panel" id="result-panel" hidden></div>
           <div class="feed" id="feed"></div>
+          <div class="chat">
+            <input
+              class="input chat__input"
+              id="chat-input"
+              placeholder="说点什么…（AI 会看到）"
+              maxlength="140"
+              autocomplete="off"
+            />
+            <button class="btn" id="chat-send" type="button">发送</button>
+          </div>
         </div>
       </aside>
     </main>

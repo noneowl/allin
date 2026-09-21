@@ -152,7 +152,7 @@ body.is-lobby .app {
 
 .sidebar__section {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   min-height: 0;
 }
 

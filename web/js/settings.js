@@ -168,10 +168,11 @@ export class SettingsDialog {
       ]),
 
       el('div', { class: 'grid-3' }, [
-        this.#switch('tableTalk', '桌边话', '让 AI 说话干扰你'),
+        this.#switch('tableTalk', '桌边话', 'AI 会边说边打，气泡显示在头像上'),
         this.#switch('reasoning', '显示推理', '把 AI 的思路显示在实况里'),
-        this.#switch('showAiCards', '透视模式', '调试用：显示 AI 底牌'),
+        this.#switch('postHandTalk', '赛后点评', '每手结束后每个 AI 用一句话点评结果（每个 AI 一次请求）'),
       ]),
+      el('div', { class: 'grid-3' }, [this.#switch('showAiCards', '透视模式', '调试用：显示 AI 底牌')]),
 
       el('div', { class: 'section-title', text: '牌桌' }),
       el('div', { class: 'grid-2' }, [
@@ -420,6 +421,7 @@ export class SettingsDialog {
       tableTalk: this.draft.tableTalk,
       reasoning: this.draft.reasoning,
       showAiCards: this.draft.showAiCards,
+      postHandTalk: this.draft.postHandTalk,
       table: { ...this.draft.table },
     };
     // Only send the key when the user actually typed one.

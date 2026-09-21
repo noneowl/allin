@@ -19,6 +19,7 @@ const refs = {
   toasts: $('#toasts'),
   modelPill: $('#model-pill'),
   modalRoot: $('#modal-root'),
+  resultPanel: $('#result-panel'),
   lobbyRoot: $('#lobby-root'),
 };
 
@@ -109,11 +110,10 @@ function apply(view) {
   hud.renderFeed(table);
   hud.renderActionBar(table);
 
-  if (table) {
-    if (table.phase === 'gameover') hud.showGameOver(table);
-    else if (table.phase === 'handover') hud.showHandResult(table);
-    else hud.clearOverlay();
-  }
+  hud.renderResultPanel(table);
+
+  if (table && table.phase === 'gameover') hud.showGameOver(table);
+  else if (!table || table.phase !== 'gameover') hud.clearOverlay();
   directSound(table);
 }
 
@@ -353,6 +353,30 @@ $('#btn-restart').addEventListener('click', () => {
   // Changing the number of seats means a new table (and new invite links),
   // so this opens the setup screen rather than silently reusing the room.
   openLobby();
+});
+
+async function sendChat() {
+  const input = $('#chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  try {
+    await api.say(text);
+  } catch (err) {
+    hud.toast({ level: 'error', message: err.message });
+  }
+}
+
+$('#chat-send').addEventListener('click', () => {
+  unlockAudio();
+  sendChat();
+});
+
+$('#chat-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    sendChat();
+  }
 });
 
 $('#btn-new-hand').addEventListener('click', () => {

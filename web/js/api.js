@@ -103,6 +103,7 @@ export const api = {
   nextHand: () => request('POST', '/api/room/next', {}, { scoped: true }),
   restart: () => request('POST', '/api/room/restart', {}, { scoped: true }),
   force: (seat) => request('POST', '/api/room/force', { seat }, { scoped: true }),
+  say: (text) => request('POST', '/api/room/say', { text }, { scoped: true }),
   retry: () => request('POST', '/api/room/retry', {}, { scoped: true }),
   cancel: () => request('POST', '/api/room/cancel', {}, { scoped: true }),
 };

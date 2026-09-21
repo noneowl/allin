@@ -1,7 +1,7 @@
 import { complete, ProviderError } from '../providers/index.js';
 import { GameError } from '../engine/table.js';
-import { buildMessages } from './prompt.js';
-import { mockDecision } from './mock.js';
+import { buildMessages, buildReactionMessages } from './prompt.js';
+import { mockDecision, mockReaction } from './mock.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -275,5 +275,48 @@ export class PokerAgent {
       attempts: attemptLog,
       failures,
     });
+  }
+
+  /**
+   * One short line about the hand that just finished.
+   *
+   * Best-effort by design: a post-hand remark must never break the game, so any
+   * failure resolves to null instead of throwing.
+   */
+  async react(table, seatIdx, { signal } = {}) {
+    const messages = buildReactionMessages({ table, seatIdx, personality: this.personality });
+    if (!messages) return null;
+
+    const budget = Math.min(this.config.maxTokens ?? 1500, 1200);
+    const startedAt = Date.now();
+
+    try {
+      let text;
+      if (this.config.provider === DEMO_PROVIDER) {
+        if (this.config.demoDelayMs !== 0) await sleep(150 + Math.random() * 350);
+        text = mockReaction(table, seatIdx, this.personality);
+      } else {
+        const response = await complete({
+          providerId: this.config.provider,
+          baseUrl: this.config.baseUrl,
+          apiKey: this.config.apiKey,
+          model: this.config.model,
+          messages,
+          maxTokens: budget,
+          temperature: Math.min(1, (this.config.temperature ?? 0.8) + 0.15),
+          timeoutMs: this.config.timeoutMs,
+          sessionId: `${this.sessionId}-react`,
+          signal,
+        });
+        text = response.text;
+      }
+
+      const parsed = extractJsonObject(text);
+      const line = typeof parsed?.reaction === 'string' ? parsed.reaction.trim() : '';
+      if (!line) return null;
+      return { text: line.slice(0, 140), latencyMs: Date.now() - startedAt, personality: this.personality };
+    } catch {
+      return null;
+    }
   }
 }

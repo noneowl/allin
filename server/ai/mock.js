@@ -149,3 +149,56 @@ export function mockDecision(table, seatIdx, personality) {
     table_talk: tableTalk,
   });
 }
+
+/** Lines the demo brain uses after a hand ends, keyed by mood. */
+const REACTIONS = {
+  win: {
+    ivan: ['稳扎稳打，牌就是这么打的。', '该收的底池，一分不少。'],
+    biao: ['哈哈哈哈！钱到我这儿就是我的了。', '早说了别跟我玩，来下一手！'],
+    jiu: ['期望值为正的决定，长期一定赢。', '这手按赔率算，我本来就该跟。'],
+    lisa: ['看吧，我早就说了。', '你还得再练练，宝贝。'],
+    kongming: ['……运气而已。', '无常。'],
+    nana: ['诶？我居然赢了！', '哎呀，运气来了挡不住。'],
+    wei: ['这手打得不错。', '下一手继续。'],
+    ada: ['频率正确。', '结果不重要，决策对了就行。'],
+  },
+  lose: {
+    ivan: ['这牌不该跟的。', '下次注意。'],
+    biao: ['操，运气太差了！再来！', '这都能输？我就不信了！'],
+    jiu: ['赔率是对的，只是这次没中。', '长期来看我还是赚的。'],
+    lisa: ['哼，让你一次。', '别得意，风水轮流转。'],
+    kongming: ['空。', '……输赢皆是虚妄。'],
+    nana: ['唉，差一点就中了。', '下一张一定来。'],
+    wei: ['算我倒霉。', '这手我认。'],
+    ada: ['方差而已。', '不调整策略。'],
+  },
+  neutral: {
+    ivan: ['走了。', '不关我的事。'],
+    biao: ['没意思，我要牌！', '快点下一手。'],
+    jiu: ['我没参与这手。', '看看就好。'],
+    lisa: ['你们玩得挺热闹。', '我就看看不说话。'],
+    kongming: ['……', '与我无关。'],
+    nana: ['我牌太差了嘛。', '哎呀，给我好牌啊。'],
+    wei: ['弃得对。', '这手没什么可打的。'],
+    ada: ['弃牌也是正期望。', '不在我的范围里。'],
+  },
+};
+
+/**
+ * Post-hand remark for the offline demo. Speaks the same JSON protocol as the
+ * real reaction path, so `PokerAgent.react` parses both identically.
+ */
+export function mockReaction(table, seatIdx, personality) {
+  const result = table.handResult;
+  if (!result) return JSON.stringify({ reaction: '' });
+
+  const id = personality?.id ?? 'wei';
+  const winners = new Set((result.awards ?? []).map((a) => a.seat));
+  const tookPart = Boolean(result.showdown?.some((s) => s.seat === seatIdx)) || winners.has(seatIdx);
+
+  const mood = winners.has(seatIdx) ? 'win' : tookPart ? 'lose' : 'neutral';
+  const pool = REACTIONS[mood][id] ?? REACTIONS[mood].wei ?? ['……'];
+  const line = pool[Math.abs(table.handId * 31 + seatIdx * 7) % pool.length];
+
+  return JSON.stringify({ reaction: line });
+}

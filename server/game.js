@@ -205,6 +205,73 @@ export class GameController {
   }
 
   /**
+   * Fire a short in-character remark from every AI that was in the hand.
+   *
+   * Runs in PARALLEL and detached: the models are independent, nothing depends
+   * on order, and the player should not wait on colour commentary. Failures are
+   * swallowed — a missing remark is not a broken game.
+   */
+  #scheduleReactions() {
+    const table = this.table;
+    const cfg = this.getConfig();
+    if (!table || table.phase === 'playing' || !cfg.postHandTalk) return;
+    if (this.reacting) return;
+
+    const handId = table.handId;
+    const reactors = table.seats.filter((s) => !s.isHuman && !s.out && s.hole.length > 0);
+    if (!reactors.length) return;
+
+    this.reacting = true;
+    Promise.all(
+      reactors.map(async (seat) => {
+        const personality = this.#personalityFor(seat);
+        const agent = new PokerAgent({
+          config: cfg,
+          personality,
+          sessionId: `${this.roomId}-seat${seat.seat}`,
+        });
+        const line = await agent.react(table, seat.seat);
+        if (!line?.text) return;
+        // Tagged with the hand it is about, so it still reads correctly if the
+        // next hand has already been dealt.
+        table.addLog({
+          seat: seat.seat,
+          name: seat.name,
+          kind: 'talk',
+          handId,
+          text: line.text,
+          postHand: true,
+        });
+        this.broadcast();
+      }),
+    )
+      .catch(() => {})
+      .finally(() => {
+        this.reacting = false;
+      });
+  }
+
+  /** A line typed by a human at the table. Public by definition. */
+  say(seatIndex, text, { handId = null } = {}) {
+    return this.enqueue(async () => {
+      const table = this.requireTable();
+      const seat = table.seats[seatIndex];
+      if (!seat || !seat.isHuman) throw new GameError('只有人类座位可以发言', 'NOT_HUMAN');
+      const clean = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 140);
+      if (!clean) return null;
+      const entry = table.addLog({
+        seat: seatIndex,
+        name: seat.name,
+        kind: 'talk',
+        text: clean,
+        ...(handId ? { handId } : {}),
+      });
+      this.broadcast();
+      return entry;
+    });
+  }
+
+  /**
    * Play out every consecutive AI turn. Returns when it is a human's turn,
    * the hand is over, or no one has chips left to act.
    */
@@ -338,6 +405,9 @@ export class GameController {
       }
       this.broadcast();
     }
+
+    // The hand just finished: let the table react to the result.
+    if (table.phase !== 'playing') this.#scheduleReactions();
   }
 
   retryCurrentAI() {

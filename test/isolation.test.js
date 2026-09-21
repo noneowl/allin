@@ -62,10 +62,12 @@ test('each human seat sees only its own hole cards', async () => {
   assert.deepEqual(v2.seats[0].hole, [], 'seat 2 must not see seat 0');
 
   // And the raw payload must not carry the codes at all.
+  // Match the JSON token ("Ac"), not a bare substring: a 2-character card code
+  // can otherwise collide with unrelated text in the payload.
   const raw2 = JSON.stringify(v2);
   const raw0 = JSON.stringify(v0);
-  for (const card of table.seats[0].hole) assert.ok(!raw2.includes(card), `${card} leaked to seat 2`);
-  for (const card of table.seats[2].hole) assert.ok(!raw0.includes(card), `${card} leaked to seat 0`);
+  for (const card of table.seats[0].hole) assert.ok(!raw2.includes(`"${card}"`), `${card} leaked to seat 2`);
+  for (const card of table.seats[2].hole) assert.ok(!raw0.includes(`"${card}"`), `${card} leaked to seat 0`);
 });
 
 test('AI hole cards are hidden from every human', async () => {

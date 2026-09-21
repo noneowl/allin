@@ -90,6 +90,22 @@ export class Table {
     this.handResult = null;
     this.handLog = [];
     this.log = [];
+    // Session memory the AI can reason about: how the table has been playing
+    // and who has been winning.
+    this.handHistory = [];
+    this.stats = this.seats.map(() => ({
+      hands: 0,
+      vpip: 0,
+      pfr: 0,
+      aggressive: 0,
+      folds: 0,
+      showdowns: 0,
+      wins: 0,
+      net: 0,
+      handCounted: false,
+      vpipCounted: false,
+      pfrCounted: false,
+    }));
     this._logId = 0;
   }
 
@@ -257,6 +273,13 @@ export class Table {
       s.lastAction = null;
       s.revealed = false;
       s.result = null;
+      const stat = this.stats[s.seat];
+      if (stat) {
+        stat.handCounted = false;
+        stat.vpipCounted = false;
+        stat.pfrCounted = false;
+      }
+      s.stackAtHandStart = s.stack;
     }
 
     this.buttonIndex = this.#nextWithChips(this.buttonIndex < 0 ? this.seatCount - 1 : this.buttonIndex - 1);
@@ -381,6 +404,26 @@ export class Table {
 
     const normalized = this.normalizeAction(seatIndex, action, legal);
     const toCallBefore = Math.max(0, this.currentBet - s.committed);
+
+    // Session-long tendencies, used to describe this player back to the models.
+    const stat = this.stats[seatIndex];
+    if (stat) {
+      if (!stat.handCounted) {
+        stat.handCounted = true;
+        stat.hands += 1;
+      }
+      const voluntary = normalized.type === 'call' || normalized.type === 'bet' || normalized.type === 'raise' || normalized.type === 'all_in';
+      if (this.street === 'preflop' && voluntary && !stat.vpipCounted) {
+        stat.vpipCounted = true;
+        stat.vpip += 1;
+      }
+      if (this.street === 'preflop' && (normalized.type === 'raise' || normalized.type === 'all_in') && !stat.pfrCounted) {
+        stat.pfrCounted = true;
+        stat.pfr += 1;
+      }
+      if (normalized.type === 'bet' || normalized.type === 'raise' || normalized.type === 'all_in') stat.aggressive += 1;
+      if (normalized.type === 'fold') stat.folds += 1;
+    }
 
     switch (normalized.type) {
       case 'fold': {
@@ -733,12 +776,48 @@ export class Table {
     }
     this.phase = 'handover';
     this.toAct = null;
+    const deltas = this.seats.map((s) => ({
+      seat: s.seat,
+      name: s.name,
+      delta: s.stack - (s.stackAtHandStart ?? s.stack),
+    }));
     this.handResult = {
       handId: this.handId,
       street: this.street,
       board: this.board.slice(),
       ...result,
+      deltas,
     };
+
+    // Fold the hand into the session memory the models get to see.
+    for (const s of this.seats) {
+      const stat = this.stats[s.seat];
+      if (stat) stat.net += s.stack - (s.stackAtHandStart ?? s.stack);
+    }
+    for (const award of result.awards ?? []) {
+      const stat = this.stats[award.seat];
+      if (stat) stat.wins += 1;
+    }
+    for (const shown of result.showdown ?? []) {
+      const stat = this.stats[shown.seat];
+      if (stat) stat.showdowns += 1;
+    }
+    this.handHistory.push({
+      handId: this.handId,
+      uncontested: Boolean(result.uncontested),
+      amount: result.amount ?? 0,
+      board: this.board.slice(),
+      deltas,
+      showdown: (result.showdown ?? []).map((s) => ({
+        seat: s.seat,
+        name: s.name,
+        hole: s.hole.slice(),
+        nameZh: s.nameZh,
+      })),
+      winners: [...new Set((result.awards ?? []).map((a) => a.seat))],
+    });
+    if (this.handHistory.length > 12) this.handHistory.shift();
+
     this.#log(`第 ${this.handId} 手结束`, 'system');
     if (this.isGameOver()) {
       this.phase = 'gameover';
@@ -758,10 +837,15 @@ export class Table {
       // Only the viewer's own seat is visible while a hand is live. Being human
       // does NOT make a seat public: with several people at one table that
       // would hand every player a look at everyone else's hole cards.
+      //
+      // Once the hand is over it is a review screen: every card is face up,
+      // including the ones that were folded (the UI dims those).
+      const handOver = this.phase === 'handover' || this.phase === 'gameover';
       const canSee =
         s.seat === viewerSeat ||
         s.revealed ||
-        (revealAll && !s.folded && s.hole.length > 0);
+        (revealAll && !s.folded && s.hole.length > 0) ||
+        (handOver && s.hole.length > 0);
       const show = showdownBySeat.get(s.seat);
       // Live hand name is only derived for cards this viewer is allowed to see,
       // so it can never leak a hidden opponent's holding.
@@ -771,7 +855,9 @@ export class Table {
         name: s.name,
         avatar: s.avatar,
         isHuman: s.isHuman,
-        personality: s.personality,
+        // Only the id travels: the full character card (ranges, sizings, leaks)
+        // is server-side prompt material and was 36% of every state broadcast.
+        personalityId: s.personality?.id ?? null,
         model: s.model,
         position: positions[s.seat] ?? null,
         stack: s.stack,
@@ -821,6 +907,25 @@ export class Table {
       legalActions: legal,
       viewerSeat,
       handResult: this.handResult,
+      // Session memory, so a model can reason about how the table has been
+      // playing instead of treating every hand as the first one.
+      handHistory: this.handHistory.slice(-8),
+      sessionStats: this.seats.map((s) => {
+        const stat = this.stats[s.seat] ?? {};
+        return {
+          seat: s.seat,
+          name: s.name,
+          isHuman: s.isHuman,
+          hands: stat.hands ?? 0,
+          vpip: stat.vpip ?? 0,
+          pfr: stat.pfr ?? 0,
+          aggressive: stat.aggressive ?? 0,
+          folds: stat.folds ?? 0,
+          showdowns: stat.showdowns ?? 0,
+          wins: stat.wins ?? 0,
+          net: stat.net ?? 0,
+        };
+      }),
       log: this.log
         .slice(-60)
         .map((entry) =>

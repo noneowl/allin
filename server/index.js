@@ -402,6 +402,12 @@ const ROUTES = {
     sendJson(res, 200, ctx.room.controller.view(ctx.seat.index));
   },
 
+  'POST /api/room/say': async (req, res, ctx) => {
+    const body = await readBody(req);
+    await ctx.room.controller.say(ctx.seat.index, body.text);
+    sendJson(res, 200, { ok: true });
+  },
+
   'POST /api/room/force': async (req, res, ctx) => {
     if (!ctx.isHost) {
       sendJson(res, 403, { error: '只有房主可以托管' });
@@ -434,6 +440,7 @@ const ROOM_SCOPED = new Set([
   'POST /api/room/restart',
   'POST /api/room/action',
   'POST /api/room/next',
+  'POST /api/room/say',
   'POST /api/room/force',
   'POST /api/room/seat',
   'POST /api/room/retry',

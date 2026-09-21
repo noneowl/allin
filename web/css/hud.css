@@ -150,7 +150,155 @@
   cursor: not-allowed;
 }
 
-/* ------------------------------------------------------------------ feed */
+/* --------------------------------------------------------- result panel */
+/* Inline, not a modal: the whole point is that the table stays visible so the
+   player can study everyone's cards after the hand. */
+.result-panel {
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(28, 36, 31, 0.9), rgba(14, 20, 17, 0.9));
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: riseIn 0.24s var(--ease-out);
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.result-panel[hidden] {
+  display: none;
+}
+
+.result-panel__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.result-panel__title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--gold);
+}
+
+.result-panel__kicker {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  text-transform: uppercase;
+}
+
+.result-panel__board {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.result-panel__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.result-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--line);
+}
+
+.result-row--win {
+  background: rgba(75, 208, 138, 0.12);
+  border-color: rgba(75, 208, 138, 0.32);
+}
+
+.result-row--folded {
+  opacity: 0.5;
+}
+
+.result-row__name {
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 84px;
+}
+
+.result-row__hand {
+  color: var(--text-2);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.result-row__delta {
+  margin-left: auto;
+  font-family: var(--font-num);
+  font-weight: 700;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.result-row__delta--up {
+  color: var(--green);
+}
+
+.result-row__delta--down {
+  color: #ff97a5;
+}
+
+.mini-card {
+  display: inline-block;
+  font-family: var(--font-num);
+  font-size: 11px;
+  font-weight: 700;
+  color: #e8e6df;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 1px 4px;
+  letter-spacing: -0.02em;
+}
+
+.mini-card.is-red {
+  color: #ff8f9e;
+}
+
+.mini-cards {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.player-line {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+/* ---------------------------------------------------------------- chat */
+.chat {
+  display: flex;
+  gap: 7px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.chat__input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 11px;
+  font-size: 12.5px;
+}
+
+.chat__input::placeholder {
+  color: var(--text-3);
+}
+
+/* ---------------------------------------------------------------- feed */
 .feed__item {
   font-size: 12.5px;
   line-height: 1.45;

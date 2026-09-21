@@ -13,8 +13,6 @@ export class Hud {
     this.decisionKey = null;
     this.liveNodes = new Map();
     this.overlayKind = null;
-    this.autoAdvanceTimer = null;
-    this.countdownTimer = null;
     this.#buildRaisePanel();
   }
 
@@ -439,10 +437,6 @@ export class Hud {
   // ----------------------------------------------------------- overlays
 
   clearOverlay() {
-    if (this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
-    if (this.countdownTimer) clearInterval(this.countdownTimer);
-    this.autoAdvanceTimer = null;
-    this.countdownTimer = null;
     this.overlayKind = null;
     if (this.overlayNode) {
       this.overlayNode.remove();
@@ -609,102 +603,93 @@ export class Hud {
     this.refs.modalRoot.appendChild(this.inviteBackdrop);
   }
 
-  showHandResult(table) {
-    if (this.overlayKind === 'result') return;
-    this.clearOverlay();
-    this.overlayKind = 'result';
-    const result = table.handResult;
-    if (!result) return;
+  /**
+   * Inline hand review shown in the sidebar.
+   *
+   * Deliberately NOT a modal: the whole point is that the table stays visible
+   * so the player can read every revealed hand before moving on. There is no
+   * timer — the next hand only starts when the player asks for it.
+   */
+  renderResultPanel(table) {
+    const host = this.refs.resultPanel;
+    if (!host) return;
+    const result = table?.handResult;
 
-    const winners = (result.awards ?? []).reduce((map, award) => {
-      map.set(award.seat, (map.get(award.seat) ?? 0) + award.amount);
-      return map;
-    }, new Map());
+    if (!result || table?.phase === 'playing') {
+      host.hidden = true;
+      clear(host);
+      return;
+    }
 
+    host.hidden = false;
+    clear(host);
+
+    const winners = new Map();
+    for (const award of result.awards ?? []) {
+      winners.set(award.seat, (winners.get(award.seat) ?? 0) + award.amount);
+    }
     const heroWon = winners.has(table.viewerSeat);
-    const winnerNames = [...winners.keys()]
-      .map((seat) => table.seats.find((s) => s.seat === seat)?.name ?? `座位 ${seat}`)
-      .join('、');
 
-    const rows = (result.showdown ?? [])
-      .slice()
-      .sort((a, b) => (winners.has(b.seat) ? 1 : 0) - (winners.has(a.seat) ? 1 : 0))
-      .map((entry) => {
-        const seat = table.seats.find((s) => s.seat === entry.seat);
-        const won = winners.get(entry.seat);
-        return el('div', { class: `result-row ${won ? 'result-row--win' : ''}` }, [
-          el('span', { text: seat?.avatar ?? '🙂' }),
-          el('span', { class: 'result-row__name', text: entry.name }),
-          el('span', { class: 'result-row__hand num', text: entry.hole.map(cardText).join(' ') }),
-          el('span', { class: 'result-row__hand', text: entry.nameZh ?? '' }),
-          won ? el('span', { class: 'result-row__amount', text: `+${fmt(won)}` }) : null,
-        ]);
-      });
-
-    const foldRows =
-      result.uncontested && result.winnerSeat !== null
-        ? [
-            el('div', { class: 'result-row result-row--win' }, [
-              el('span', { text: table.seats.find((s) => s.seat === result.winnerSeat)?.avatar ?? '🙂' }),
-              el('span', { class: 'result-row__name', text: table.seats.find((s) => s.seat === result.winnerSeat)?.name ?? '' }),
-              el('span', { class: 'result-row__hand', text: '其他人都弃牌' }),
-              el('span', { class: 'result-row__amount', text: `+${fmt(result.amount ?? 0)}` }),
-            ]),
-          ]
-        : [];
-
-    const countdown = el('div', { class: 'hint', text: '' });
-
-    const banner = el('div', { class: 'result-banner' }, [
-      el('div', { class: 'result-banner__kicker', text: `第 ${result.handId} 手 · ${STREET_TEXT[result.street] ?? ''}` }),
-      el('div', {
-        class: 'result-banner__title',
-        text: heroWon ? `你赢得 ${fmt(winners.get(table.viewerSeat))}` : `${winnerNames} 赢得 ${fmt(result.amount ?? 0)}`,
-      }),
-      el('div', {
-        class: 'result-banner__sub',
-        text: result.uncontested ? '其他人都弃牌，无需摊牌。' : '摊牌结果如下。',
-      }),
-      el('div', { class: 'result-banner__rows' }, [...foldRows, ...rows]),
-      countdown,
-      el('div', { class: 'result-banner__actions' }, [
-        el('button', {
-          class: 'btn btn--primary btn--lg',
-          text: '下一手',
-          on: { click: () => this.actions.onNextHand() },
-        }),
-        el('button', {
-          class: 'btn btn--lg',
-          text: '停一下',
-          on: { click: () => this.#pauseAutoAdvance(countdown) },
+    host.appendChild(
+      el('div', { class: 'result-panel__head' }, [
+        el('span', { class: 'result-panel__kicker', text: `第 ${result.handId} 手` }),
+        el('span', {
+          class: 'result-panel__title',
+          text: heroWon
+            ? `🏆 你赢了 ${fmt(winners.get(table.viewerSeat))}`
+            : winners.size
+              ? `${[...winners.keys()].map((i) => table.seats.find((s) => s.seat === i)?.name ?? '').join('、')} 赢得 ${fmt(result.amount ?? 0)}`
+              : '本手结束',
         }),
       ]),
-    ]);
+    );
 
-    this.#mountOverlay(banner);
+    if (result.board?.length) {
+      host.appendChild(el('div', { class: 'result-panel__board' }, result.board.map(miniCard)));
+    }
 
-    let remaining = 8;
-    countdown.textContent = `${remaining} 秒后自动开始下一手`;
-    this.countdownTimer = setInterval(() => {
-      remaining -= 1;
-      if (remaining <= 0) {
-        clearInterval(this.countdownTimer);
-        countdown.textContent = '正在开始下一手…';
-        return;
-      }
-      countdown.textContent = `${remaining} 秒后自动开始下一手`;
-    }, 1000);
-    this.autoAdvanceTimer = setTimeout(() => {
-      if (this.overlayKind === 'result') this.actions.onNextHand();
-    }, remaining * 1000);
-  }
+    host.appendChild(
+      el(
+        'div',
+        { class: 'result-panel__rows' },
+        table.seats.map((seat) => {
+          const delta = result.deltas?.find((d) => d.seat === seat.seat)?.delta ?? 0;
+          const shown = (result.showdown ?? []).find((s) => s.seat === seat.seat);
+          const won = winners.get(seat.seat);
+          const cards = seat.hole ?? [];
+          return el(
+            'div',
+            {
+              class: `result-row ${won ? 'result-row--win' : ''} ${seat.folded ? 'result-row--folded' : ''}`,
+            },
+            [
+              el('span', { text: seat.avatar }),
+              el('span', { class: 'result-row__name', text: seat.name }),
+              cards.length
+                ? el('span', { class: 'mini-cards' }, cards.map(miniCard))
+                : el('span', { class: 'result-row__hand', text: '—' }),
+              el('span', {
+                class: 'result-row__hand',
+                text: seat.folded ? '已弃牌' : shown?.nameZh ?? '',
+              }),
+              el('span', {
+                class: `result-row__delta ${
+                  delta > 0 ? 'result-row__delta--up' : delta < 0 ? 'result-row__delta--down' : ''
+                }`,
+                text: delta === 0 ? '±0' : delta > 0 ? `+${fmt(delta)}` : fmt(delta),
+              }),
+            ],
+          );
+        }),
+      ),
+    );
 
-  #pauseAutoAdvance(countdown) {
-    if (this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
-    if (this.countdownTimer) clearInterval(this.countdownTimer);
-    this.autoAdvanceTimer = null;
-    this.countdownTimer = null;
-    countdown.textContent = '自动开始已暂停 — 点击「下一手」继续';
+    host.appendChild(
+      el('div', {
+        class: 'hint',
+        text: '所有底牌都已翻开。看完了在下面点「开始下一手」继续。',
+      }),
+    );
   }
 
   showGameOver(table) {
@@ -756,6 +741,12 @@ export class Hud {
       ]),
     );
   }
+}
+
+const isRedSuit = (card) => card[1] === 'h' || card[1] === 'd';
+
+function miniCard(card) {
+  return el('span', { class: `mini-card ${isRedSuit(card) ? 'is-red' : ''}`, text: cardText(card) });
 }
 
 function stat(label, value, modifier = '') {
