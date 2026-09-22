@@ -285,13 +285,13 @@ export function tableZoom(on) {
   if (felt) felt.classList.toggle('is-allin', Boolean(on));
 }
 
-/** 状态横幅专用：CALM → SHAKEN（客户端只做展示映射，权威仍是 view）。 */
-export function mentalBanner(fromText, toText, causeText = '') {
+/** 状态横幅：CALM → SHAKEN（客户端只做展示映射，权威仍是 view）。recover=回血（向好）。 */
+export function mentalBanner(fromText, toText, causeText = '', { recover = false } = {}) {
   return banner({
     html: `<span class="fx-banner__from">${escapeHtml(fromText)}</span> → <span class="fx-banner__to">${escapeHtml(toText)}</span>`,
     sub: causeText,
-    cls: 'fx-banner--mental',
-    holdMs: 1350,
+    cls: recover ? 'fx-banner--mental fx-banner--recover' : 'fx-banner--mental',
+    holdMs: recover ? 1500 : 1350,
   });
 }
 

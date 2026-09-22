@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Battle, loadBalance } from '../server/battle.js';
 import { GameError } from '../server/engine/duel.js';
 import { seededRng } from '../server/engine/cards.js';
+import { isDownEvent } from '../server/boss/mental.js';
 
 const makeRng = (seed) => {
   const r = seededRng(seed);
@@ -370,4 +371,110 @@ test('抓到诈唬的那手会触发 BLUFF_CAUGHT 类心理事件（多种子烟
     }
   }
   assert.ok(causes.size >= 2, `心理事件通路应有多种触发（实际 ${[...causes]}）`);
+});
+
+// ------------------------------------------------------- 正向状态与新契约
+
+test('神了(FLOW)：READ 雾化、言语免疫、破绽追问被无视', () => {
+  const b = new Battle({ rng: makeRng(31) });
+  b.boss.mental.state = 'FLOW';
+  assert.equal(b.view().boss.state, 'FLOW');
+
+  // READ 雾化：读不出倾向
+  for (let i = 0; i < 6; i++) {
+    b.readsLeft = 2;
+    const ev = b.read().events.find((e) => e.type === 'read');
+    assert.equal(ev.lean, null, '神了读不出倾向');
+    assert.ok(ev.text.length > 0);
+  }
+
+  // 言语免疫：挑衅不挂 Buff
+  const s = b.speak('taunt');
+  assert.equal(s.events.find((e) => e.type === 'speech').result, 'resist');
+  assert.equal(b.boss.buffs.filter((x) => x.skill === 'taunt').length, 0, '免疫不挂 Buff');
+
+  // 质疑免疫：矛盾保留（他凉下来还能追问）
+  const c = b.boss.addContradiction({ kind: 'spoken_vs_bet', handNo: b.handNo, detail: {} });
+  b.speechLeft.challenge = 1;
+  const ch = b.speak('challenge');
+  assert.equal(ch.events.find((e) => e.type === 'speech').result, 'resist');
+  assert.equal(b.boss.findContradiction(c.id).resolved, false, '破绽还留着');
+  assert.equal(b.boss.state, 'FLOW', '免疫言语不推状态');
+});
+
+test('READ 带倾向标签（判断轴，不是答案）', () => {
+  const b = new Battle({ rng: makeRng(32) });
+  b.boss.noteAction({ action: 'raise', intent: 'BLUFF', street: b.duel.street });
+  let got = null;
+  for (let i = 0; i < 16 && !got; i++) {
+    b.readsLeft = 2;
+    const ev = b.read().events.find((e) => e.type === 'read');
+    assert.ok(ev.text.length > 0);
+    if (ev.lean) got = ev;
+  }
+  assert.ok(got, '面对他的加注，BLUFF 意图应当能读出倾向');
+  assert.equal(got.lean, 'fold');
+  assert.equal(got.leanLabel, '他想让你弃牌');
+});
+
+test('视图新字段：状态打法提示 / 言语贴纸 / 可追问标志', () => {
+  const b = new Battle({ rng: makeRng(33) });
+  const v = b.view();
+  assert.ok(typeof v.boss.stateHint === 'string' && v.boss.stateHint.length > 0, '状态要有打法含义');
+  assert.deepEqual(v.boss.effects, [], '没吃言语时没有贴纸');
+  assert.equal(v.player.canChallenge, false, '没有破绽时不能追问');
+
+  // 挂上挑衅 Buff → 贴纸出现
+  b.speak('taunt');
+  const fx = b.view().boss.effects;
+  assert.equal(fx.length, 1);
+  assert.equal(fx[0].kind, 'taunt');
+  assert.equal(fx[0].icon, '🔥');
+  assert.ok(fx[0].desc.includes('加注'), '贴纸要说清行为含义');
+
+  // 制造破绽 → 可追问
+  b.boss.addContradiction({ kind: 'spoken_vs_bet', handNo: b.handNo, detail: {} });
+  assert.equal(b.view().player.canChallenge, true);
+
+  // lastAction 带 street（READ 时机高亮的依据）
+  assert.ok('street' in { ...b.view().boss.lastAction } || b.view().boss.lastAction === null);
+});
+
+test('赢钱改变心理状态：连赢计数 + 得意台词', () => {
+  const b = new Battle({ rng: makeRng(34) });
+  let quips = 0;
+  let steps = 0;
+  // 玩家一路弃牌：Boss 连赢小底池 → 连胜计数爬升、赢后放臭屁
+  while (b.handNo <= 8 && steps++ < 400 && b.phase === 'playing') {
+    const L = b.view().player.legal;
+    const res = b.act(L.fold ? 'fold' : (L.check ? 'check' : 'call'));
+    for (const e of res.events) if (e.type === 'talk') quips += 1;
+  }
+  assert.ok(b.bossStreak >= 3, `连赢计数应达到 3（实际 ${b.bossStreak}）`);
+  assert.ok(quips >= 1, '赢牌后应有得意台词');
+  assert.ok(b.recentHands.length > 0 && b.recentHands.every((n) => n > 0), '势头记录为正');
+});
+
+test('心理事件带行为提示与方向（回血 ▲ / 打击 ▼）', () => {
+  const b = new Battle({ rng: makeRng(35) });
+  // 直接走抓千命中路径：SHAKEN → TILT（▼打击）
+  b.boss.mental.state = 'SHAKEN';
+  const c = b.boss.addContradiction({ kind: 'spoken_vs_bet', handNo: b.handNo, detail: {} });
+  b.openWindow = { id: c.id, deadline: Date.now() + 5000, line: 'x', windowMs: 2000 };
+  const res = b.object(c.id);
+  const mental = res.events.find((e) => e.type === 'mental');
+  assert.ok(mental, '抓千命中要有 mental 事件');
+  assert.equal(mental.cause, 'CONTRADICTION_EXPOSED');
+  assert.ok(typeof mental.hint === 'string' && mental.hint.length > 0, '横幅要带行为后果');
+  assert.equal(mental.down, true, '打击方向向下');
+  const objRes = res.events.find((e) => e.type === 'objection_result');
+  assert.ok(objRes && typeof objRes.hint === 'string', 'objection_result 也带 hint');
+
+  // 回血方向：BIG_POT_WON 让 SHAKEN → CALM（▲）
+  b.boss.mental.state = 'SHAKEN';
+  b.boss.mental.debt = 0;
+  const up = b.boss.mentalEvent('BIG_POT_WON', 1);
+  assert.ok(up, '赢大底池应能回血');
+  assert.equal(isDownEvent(up.from, up.to), false, '回血方向向上');
+  assert.ok(up.hint && up.hint.length > 0, '回血也带新状态的提示');
 });

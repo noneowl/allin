@@ -39,6 +39,31 @@ export class Boss {
     return this.balance.mentalModifiers[this.state]?.readClarity ?? 0;
   }
 
+  /** 当前状态的完整定义（修正、抗性、提示语都在里面）。 */
+  get stateDef() {
+    return this.balance.mentalModifiers[this.state] ?? this.balance.mentalModifiers.CALM ?? {};
+  }
+
+  /** 状态级行为提示（横幅 / 情绪刻度上的打法说明）。 */
+  get stateHint() {
+    return this.stateDef.hint ?? null;
+  }
+
+  /** 神了：READ 雾化。 */
+  get readFog() {
+    return Boolean(this.stateDef.readFog);
+  }
+
+  /** 神了：言语免疫（得意：减半由 speechScale 处理）。 */
+  get speechScale() {
+    const v = this.stateDef.speechScale;
+    return Number.isFinite(v) ? v : 1;
+  }
+
+  get speechImmune() {
+    return this.speechScale <= 0;
+  }
+
   /** 每手开始：暴露偏移清零。矛盾跨手保留 —— 异议窗口可能还没过期。 */
   resetHand() {
     this.lastActionInfo = null;
@@ -91,7 +116,9 @@ export class Boss {
     const isAggressive = action === 'bet' || action === 'raise' || action === 'allin';
     if (!isAggressive) {
       if (action === 'fold') return null;
-      const talkative = { CALM: 0.18, SHAKEN: 0.3, TILT: 0.42, BREAKING: 0.55 }[this.state] ?? 0.2;
+      const talkative = {
+        CALM: 0.18, SHAKEN: 0.3, TILT: 0.42, BREAKING: 0.55, HOT: 0.45, FLOW: 0.12,
+      }[this.state] ?? 0.2;
       if (this.rng() > talkative) return null;
     }
     const mods = this.currentMods();
@@ -110,8 +137,11 @@ export class Boss {
 
   // ---------------------------------------------------------------- READ
 
-  /** @returns {string} 一条模糊的心理信息 */
-  read({ street }) {
+  /**
+   * 一条 READ：模糊信息 + 期望方向（lean 是判断轴，不是答案）。
+   * @returns {{text: string, lean: string|null, leanLabel: string|null}}
+   */
+  read({ street, momentum = 0 }) {
     const live = this.liveIntent(street);
     const situation = !live ? 'neutral'
       : live.action === 'check' || live.action === 'call' ? 'checked'
@@ -121,6 +151,7 @@ export class Boss {
       clarity: this.readClarity,
       situation,
       intent: live?.intent ?? null,
+      momentum,
       rng: this.rng,
     });
   }
@@ -155,10 +186,16 @@ export class Boss {
 
   // ---------------------------------------------------------------- 心理
 
-  /** @returns {{from,to,cause}|null} */
-  mentalEvent(name) {
-    const t = this.mental.attempt(name);
-    if (t) t.causeName = EVENT_NAMES[name] ?? name;
+  /**
+   * 一次心理事件判定（含当前状态对该事件的抗性）。
+   * @returns {{from,to,cause,causeName,hint}|null}
+   */
+  mentalEvent(name, armor = 1) {
+    const t = this.mental.attempt(name, armor);
+    if (t) {
+      t.causeName = EVENT_NAMES[name] ?? name;
+      t.hint = this.balance.mentalModifiers?.[t.to]?.hint ?? null;
+    }
     return t;
   }
 

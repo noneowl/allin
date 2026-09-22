@@ -49,6 +49,7 @@ export function assembleMods(balance, state, { buffs = [], exposed = false } = {
   }
 
   const fx = balance.speechEffects ?? {};
+  const stateSpeech = clamp(mods.speechScale ?? 1, 0, 2); // 状态级言语抗性（得意减半，神了免疫）
   for (const buff of buffs) {
     if (buff.skill === 'shame') {
       // 「害怕被认为胆小」：被逼弃牌之后，接下来几次决策更凶
@@ -59,7 +60,8 @@ export function assembleMods(balance, state, { buffs = [], exposed = false } = {
     }
     const effect = fx[buff.skill];
     if (!effect) continue;
-    const scale = effect.stateScale?.[state] ?? 1;
+    const scale = (effect.stateScale?.[state] ?? 1) * stateSpeech;
+    if (scale <= 0) continue; // 免疫状态下旧 Buff 也不生效
     if (buff.skill === 'taunt') {
       mods.aggression += (effect.aggression ?? 0) * scale;
       mods.raiseFreq += (effect.raiseFreq ?? 0) * scale;

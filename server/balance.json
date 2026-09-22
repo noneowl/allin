@@ -1,5 +1,5 @@
 {
-  "comment": "《allin》原型全部可调数值。改这里即可调平衡，无需动代码。",
+  "comment": "《allin》原型全部可调数值。六状态情绪刻度：神了(正极端·纯利) → 得意 → 冷静 → 动摇 → 上头 → 崩坏(负极端·纯弊)。除两端外皆双刃。",
 
   "stacks": { "player": 1000, "boss": 1000 },
   "blinds": { "small": 5, "big": 10 },
@@ -27,25 +27,48 @@
   },
 
   "mentalModifiers": {
+    "FLOW": {
+      "bluff": -0.1, "raiseFreq": 0, "betSize": 0.05, "aggression": 0.05,
+      "foldThreshold": 0.1, "callThreshold": 0.05, "risk": -0.05, "variance": 0.05,
+      "trapChance": 0.3, "lineBias": 0, "readClarity": -1,
+      "readFog": true, "speechScale": 0, "armor": {},
+      "hint": "手风正热 · 读不出、说不动、尺度精准 —— 别硬碰，弃牌等他凉"
+    },
+    "HOT": {
+      "bluff": 0.12, "raiseFreq": 0.05, "betSize": 0.15, "aggression": 0.1,
+      "foldThreshold": -0.03, "callThreshold": -0.06, "risk": 0.1, "variance": 0.2,
+      "trapChance": 0.1, "lineBias": 0.3, "readClarity": 0,
+      "readFog": false, "speechScale": 0.5,
+      "armor": { "BIG_POT_LOST": 0.45, "ALL_IN_LOST": 0.5 },
+      "hint": "得意忘形 · 价值注更狠、敢 hero call、也会空城大注 —— 别 bluff 他，抓他的大注"
+    },
     "CALM": {
       "bluff": 0.0, "raiseFreq": 0.0, "betSize": 0.0, "aggression": 0.0,
       "foldThreshold": 0.0, "callThreshold": 0.0, "risk": 0.0, "variance": 0.15,
-      "trapChance": 0.12, "lineBias": 0.18, "readClarity": 0
+      "trapChance": 0.12, "lineBias": 0.18, "readClarity": 0,
+      "readFog": false, "speechScale": 1, "armor": {},
+      "hint": "冷静难读、也不送分 —— 想赢大池，先把他搞出舒适区"
     },
     "SHAKEN": {
       "bluff": 0.1, "raiseFreq": 0.05, "betSize": 0.1, "aggression": 0.1,
       "foldThreshold": -0.03, "callThreshold": -0.04, "risk": 0.05, "variance": 0.25,
-      "trapChance": 0.08, "lineBias": 0.3, "readClarity": 0
+      "trapChance": 0.08, "lineBias": 0.3, "readClarity": 0,
+      "readFog": false, "speechScale": 1, "armor": {},
+      "hint": "动摇 · 漏话变多、也更凶 —— 多读、多抓，破绽最多的状态"
     },
     "TILT": {
       "bluff": 0.25, "raiseFreq": 0.2, "betSize": 0.3, "aggression": 0.3,
       "foldThreshold": -0.08, "callThreshold": -0.08, "risk": 0.25, "variance": 0.4,
-      "trapChance": 0.05, "lineBias": 0.4, "readClarity": 1
+      "trapChance": 0.05, "lineBias": 0.4, "readClarity": 1,
+      "readFog": false, "speechScale": 1, "armor": {},
+      "hint": "上头 · 更大注、更少弃、爱接全下 —— 大注推他，别当胆小鬼"
     },
     "BREAKING": {
       "bluff": 0.2, "raiseFreq": 0.25, "betSize": 0.35, "aggression": 0.35,
       "foldThreshold": -0.05, "callThreshold": -0.1, "risk": 0.3, "variance": 0.75,
-      "trapChance": 0.05, "lineBias": 0.55, "readClarity": 2
+      "trapChance": 0.05, "lineBias": 0.55, "readClarity": 2,
+      "readFog": false, "speechScale": 1, "armor": {},
+      "hint": "崩坏 · 信息全漏、行为失控 —— 全力收割"
     }
   },
 
@@ -66,7 +89,6 @@
   },
 
   "contradiction": {
-    "lineBiasBase": "见 mentalModifiers.lineBias：选出与实际注码不符的台词的概率",
     "sizeLevels": [0.35, 0.55, 0.95, 1.5],
     "behaviorOverbet": 1.0,
     "windowBaseMs": 1600,
@@ -75,42 +97,62 @@
   },
 
   "bigPotLostRatio": 0.25,
+  "winStreakHands": 3,
+  "winQuipChance": 0.55,
 
   "speechEffects": {
     "taunt": {
       "aggression": 0.3, "raiseFreq": 0.25, "bluff": 0.15, "betSize": 0.2, "risk": 0.15,
-      "stateScale": { "CALM": 0.5, "SHAKEN": 1.0, "TILT": 1.6, "BREAKING": 1.3 }
+      "stateScale": { "CALM": 0.5, "SHAKEN": 1.0, "TILT": 1.6, "BREAKING": 1.3, "HOT": 1.0, "FLOW": 1.0 }
     },
     "pressure": {
       "callWeight": -0.4, "foldWeight": 0.6, "aggression": -0.15,
-      "stateScale": { "CALM": 0.4, "SHAKEN": 1.0, "TILT": 1.2, "BREAKING": 1.5 }
+      "stateScale": { "CALM": 0.4, "SHAKEN": 1.0, "TILT": 1.2, "BREAKING": 1.5, "HOT": 1.0, "FLOW": 1.0 }
     },
     "challenge": {
-      "transitionChance": { "CALM": 0.85, "SHAKEN": 0.7, "TILT": 0.4, "BREAKING": 0.4 }
+      "transitionChance": { "CALM": 0.85, "SHAKEN": 0.7, "TILT": 0.4, "BREAKING": 0.4, "HOT": 0.7, "FLOW": 0.4 }
     }
   },
 
   "transitions": {
+    "comment": "双向转移表：打击向下（含从正轨打断），赢钱向上。抓千/言语类事件永不回血。",
+
     "BLUFF_CAUGHT": {
-      "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 0.4], "TILT": ["BREAKING", 0.2]
+      "HOT": ["CALM", 0.75], "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 0.4], "TILT": ["BREAKING", 0.2]
     },
     "PLAYER_BLUFF_SUCCESS": {
-      "CALM": ["SHAKEN", 0.55], "SHAKEN": ["TILT", 0.3], "TILT": ["BREAKING", 0.1]
+      "HOT": ["CALM", 0.6], "CALM": ["SHAKEN", 0.55], "SHAKEN": ["TILT", 0.3], "TILT": ["BREAKING", 0.1]
     },
     "CONTRADICTION_EXPOSED": {
-      "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 1.0], "TILT": ["BREAKING", 0.55]
+      "HOT": ["CALM", 0.85], "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 1.0], "TILT": ["BREAKING", 0.55]
     },
     "LANGUAGE_WEAKNESS_HIT": {
-      "CALM": ["SHAKEN", 0.85], "SHAKEN": ["TILT", 0.7], "TILT": ["BREAKING", 0.3]
-    },
-    "BIG_POT_LOST": {
-      "SHAKEN": ["TILT", 0.75], "TILT": ["BREAKING", 0.85]
-    },
-    "ALL_IN_LOST": {
-      "CALM": ["SHAKEN", 0.8], "SHAKEN": ["TILT", 1.0], "TILT": ["BREAKING", 1.0]
+      "HOT": ["CALM", 0.7], "CALM": ["SHAKEN", 0.85], "SHAKEN": ["TILT", 0.7], "TILT": ["BREAKING", 0.3]
     },
     "CONSECUTIVE_READ_SUCCESS": {
-      "CALM": ["SHAKEN", 0.65], "SHAKEN": ["TILT", 0.55], "TILT": ["BREAKING", 0.35]
+      "HOT": ["CALM", 0.6], "CALM": ["SHAKEN", 0.65], "SHAKEN": ["TILT", 0.55], "TILT": ["BREAKING", 0.35]
+    },
+
+    "HAND_LOST": {
+      "FLOW": ["HOT", 1.0], "HOT": ["CALM", 0.6]
+    },
+    "BIG_POT_LOST": {
+      "FLOW": ["HOT", 1.0], "HOT": ["SHAKEN", 0.7],
+      "CALM": ["SHAKEN", 0.55], "SHAKEN": ["TILT", 0.75], "TILT": ["BREAKING", 0.85]
+    },
+    "ALL_IN_LOST": {
+      "FLOW": ["HOT", 1.0], "HOT": ["SHAKEN", 1.0],
+      "CALM": ["SHAKEN", 0.8], "SHAKEN": ["TILT", 1.0], "TILT": ["BREAKING", 1.0]
+    },
+
+    "BIG_POT_WON": {
+      "HOT": ["FLOW", 0.7], "SHAKEN": ["CALM", 0.7], "TILT": ["SHAKEN", 0.65], "BREAKING": ["TILT", 0.5]
+    },
+    "ALL_IN_WON": {
+      "HOT": ["FLOW", 0.85], "SHAKEN": ["CALM", 0.85], "TILT": ["SHAKEN", 0.8], "BREAKING": ["TILT", 0.65]
+    },
+    "WIN_STREAK": {
+      "CALM": ["HOT", 0.85], "SHAKEN": ["HOT", 0.5], "TILT": ["SHAKEN", 0.35]
     }
   },
 

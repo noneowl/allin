@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decide, assembleMods, monteCarloEquity, rollBreakingMode } from '../server/boss/ai.js';
 import { Boss } from '../server/boss/boss.js';
-import { Mental, STATES, ORDER, FACES, MOODS } from '../server/boss/mental.js';
+import { Mental, STATES, SCALE, ORDER, isDownEvent, FACES, MOODS } from '../server/boss/mental.js';
 import { pickLine, claimMatches, sizeLevel, pickSpeechReact, TALK } from '../server/boss/talk.js';
-import { pickRead, INTENT_LINES, STATE_LINES } from '../server/boss/reads.js';
+import { pickRead, LEANS, INTENT_LINES, STATE_LINES, FOG_LINES } from '../server/boss/reads.js';
 import { loadBalance } from '../server/battle.js';
 import { seededRng } from '../server/engine/cards.js';
 
@@ -17,15 +17,65 @@ const balance = loadBalance();
 
 // ------------------------------------------------------------------ 心理状态机
 
-test('状态只升不降，转移表全部合法', () => {
+test('转移表结构合法：双向、无自环、概率在 0..1，关键边齐全', () => {
   for (const [event, row] of Object.entries(balance.transitions)) {
-    for (const [from, [to, chance]] of Object.entries(row)) {
+    if (event === 'comment') continue;
+    for (const [from, spec] of Object.entries(row)) {
+      const [to, chance] = spec;
       assert.ok(STATES.includes(from), `${event} 的起点 ${from} 合法`);
       assert.ok(STATES.includes(to), `${event} 的终点 ${to} 合法`);
-      assert.ok(ORDER[to] > ORDER[from], `${event}: ${from} → ${to} 必须恶化`);
+      assert.notEqual(to, from, `${event}: ${from} → ${to} 不允许自环`);
       assert.ok(chance >= 0 && chance <= 1, `${event}/${from} 概率在 0..1`);
     }
   }
+  const T = balance.transitions;
+  // 打击向下（含从正轨打断）
+  assert.deepEqual(T.BLUFF_CAUGHT.CALM, ['SHAKEN', 1]);
+  assert.deepEqual(T.CONTRADICTION_EXPOSED.SHAKEN, ['TILT', 1]);
+  assert.deepEqual(T.BLUFF_CAUGHT.HOT, ['CALM', 0.75], '顺风被抓诈唬 → 幻灭');
+  // 赢钱向上（非线性回血）
+  assert.deepEqual(T.BIG_POT_WON.TILT, ['SHAKEN', 0.65]);
+  assert.deepEqual(T.ALL_IN_WON.BREAKING, ['TILT', 0.65]);
+  assert.deepEqual(T.WIN_STREAK.CALM, ['HOT', 0.85], '连赢爬正向轴');
+  assert.deepEqual(T.BIG_POT_WON.HOT, ['FLOW', 0.7], '得意时赢大底池 → 神了');
+  // 顺风可被打断
+  assert.deepEqual(T.HAND_LOST.FLOW, ['HOT', 1], '输一手神了就掉档');
+  // 抓千/言语类事件永不回血：所有边必须是「向下或打断正轨」
+  for (const ev of ['CONTRADICTION_EXPOSED', 'LANGUAGE_WEAKNESS_HIT', 'BLUFF_CAUGHT',
+    'CONSECUTIVE_READ_SUCCESS', 'PLAYER_BLUFF_SUCCESS']) {
+    for (const [from, [to]] of Object.entries(T[ev])) {
+      assert.ok(isDownEvent(from, to), `${ev}: ${from} → ${to} 必须向下（心理打击不回血）`);
+    }
+  }
+});
+
+test('状态可以回升（赢钱事件）与护甲减伤（心理打击不吃护甲）', () => {
+  const up = new Mental({ transitions: { WIN_STREAK: { CALM: ['HOT', 1] } }, rng: () => 0.99 });
+  up.state = 'CALM';
+  assert.deepEqual(up.attempt('WIN_STREAK'), { from: 'CALM', to: 'HOT', cause: 'WIN_STREAK' });
+
+  // 护甲：HOT 对 BIG_POT_LOST ×0.45 —— 概率 0.6 被压到 0.27，rng=0.5 打不下来
+  const table = { BIG_POT_LOST: { HOT: ['SHAKEN', 0.6] } };
+  const armored = new Mental({ transitions: table, rng: () => 0.5 });
+  armored.state = 'HOT';
+  assert.equal(armored.attempt('BIG_POT_LOST', 0.45), null, '护甲兜住');
+  assert.equal(armored.state, 'HOT');
+  const naked = new Mental({ transitions: table, rng: () => 0.5 });
+  naked.state = 'HOT';
+  assert.deepEqual(naked.attempt('BIG_POT_LOST', 1), { from: 'HOT', to: 'SHAKEN', cause: 'BIG_POT_LOST' });
+});
+
+test('状态级言语抗性：得意减半、神了免疫', () => {
+  const buff = [{ skill: 'taunt', decisions: 2 }];
+  const delta = (state) => {
+    const m = assembleMods(balance, state, { buffs: buff });
+    return m.aggression - balance.mentalModifiers[state].aggression;
+  };
+  const shaken = delta('SHAKEN'); // stateScale 1.0 × speechScale 1 = 全额
+  const hot = delta('HOT');       // × speechScale 0.5 = 减半
+  const flow = delta('FLOW');     // × speechScale 0 = 免疫
+  assert.ok(hot > 0 && hot < shaken, `得意减半：SHAKEN=${shaken.toFixed(2)} HOT=${hot.toFixed(2)}`);
+  assert.equal(flow, 0, '神了言语免疫');
 });
 
 test('确定概率的转移：1.0 必发、0 必不发', () => {
@@ -61,6 +111,10 @@ test('四个状态都有表情和中文标签', () => {
     assert.ok(FACES[s], `${s} 缺表情`);
     assert.ok(MOODS[s], `${s} 缺标签`);
   }
+  assert.equal(SCALE.length, 6, '情绪刻度六格');
+  assert.equal(isDownEvent('CALM', 'SHAKEN'), true);
+  assert.equal(isDownEvent('HOT', 'CALM'), true, '从得意掉下来也是向下');
+  assert.equal(isDownEvent('SHAKEN', 'CALM'), false, '回血是向上');
 });
 
 // ------------------------------------------------------------------ 矛盾判定
@@ -128,18 +182,29 @@ test('言语回应：每个状态 × 技能 × 结果都有话', () => {
 
 // ------------------------------------------------------------------ READ
 
-test('READ 对每个状态 × 情境 × 意图都返回非空信息', () => {
+test('READ 对每个状态 × 情境 × 意图都返回结构化信息', () => {
   for (const state of STATES) {
     for (const situation of ['bet', 'checked', 'neutral']) {
       for (const intent of [null, 'VALUE', 'BLUFF', 'PROBE', 'TRAP', 'POT_CONTROL']) {
         for (let seed = 1; seed <= 5; seed++) {
-          const text = pickRead({ state, clarity: balance.mentalModifiers[state].readClarity, situation, intent, rng: rngOf(seed * 7 + state.length) });
-          assert.ok(text.length > 0, `${state}/${situation}/${intent} 返回空`);
+          const r = pickRead({
+            state, clarity: balance.mentalModifiers[state].readClarity,
+            situation, intent, rng: rngOf(seed * 7 + state.length),
+          });
+          assert.ok(typeof r.text === 'string' && r.text.length > 0, `${state}/${situation}/${intent} 返回空`);
+          assert.ok(r.lean === null || LEANS[r.lean], `lean 只能是 null 或合法标签（得到 ${r.lean}）`);
+          assert.equal(r.leanLabel, r.lean ? LEANS[r.lean] : null);
         }
       }
     }
   }
-  assert.ok(INTENT_LINES.BLUFF[0].length > 0 && STATE_LINES.BREAKING.length > 0);
+  // 神了：READ 必须雾化 —— 面对他的下注也读不出倾向
+  for (let seed = 1; seed <= 20; seed++) {
+    const r = pickRead({ state: 'FLOW', situation: 'bet', intent: 'BLUFF', rng: rngOf(seed) });
+    assert.equal(r.lean, null, '神了读不出倾向');
+    assert.ok(FOG_LINES.includes(r.text), '神了只能抽到雾化台词');
+  }
+  assert.ok(INTENT_LINES.BLUFF[0].length > 0 && STATE_LINES.BREAKING.length > 0 && STATE_LINES.HOT.length > 0);
 });
 
 // ------------------------------------------------------------------ 决策
@@ -285,11 +350,16 @@ test('Boss：下注类动作永远配台词，弃牌从不说话', () => {
 test('READ 优先给 live intent（本街刚下注的倾向）', () => {
   const boss = new Boss({ balance, rng: rngOf(71) });
   boss.noteAction({ action: 'raise', intent: 'BLUFF', street: 'flop' });
-  const text = boss.read({ street: 'flop' });
-  assert.ok(text.length > 0);
-  // 换街之后 live intent 失效，回落到状态信息
-  const prev = boss.lastActionInfo;
-  boss.lastActionInfo = { ...prev, street: 'preflop' };
+  let leanSeen = null;
+  for (let i = 0; i < 16 && !leanSeen; i++) {
+    const r = boss.read({ street: 'flop' });
+    assert.ok(r.text.length > 0);
+    if (r.lean) leanSeen = r;
+  }
+  assert.ok(leanSeen, '面对他的加注，BLUFF 意图应当能读出倾向');
+  assert.equal(leanSeen.lean, 'fold');
+  assert.equal(leanSeen.leanLabel, '他想让你弃牌');
+  // 换街之后 live intent 失效，回落到状态信息（无 lean）
   const neutral = boss.read({ street: 'river' });
-  assert.ok(neutral.length > 0);
+  assert.ok(neutral.text.length > 0);
 });

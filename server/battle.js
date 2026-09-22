@@ -16,8 +16,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Duel, GameError } from './engine/duel.js';
 import { Boss } from './boss/boss.js';
-import { sizeLevel, claimMatches, FINAL_HEART, DEFEAT_LINE } from './boss/talk.js';
-import { MOODS } from './boss/mental.js';
+import { sizeLevel, claimMatches, FINAL_HEART, DEFEAT_LINE, pickWinQuip } from './boss/talk.js';
+import { MOODS, isDownEvent } from './boss/mental.js';
 import { makeDeck, shuffle } from './engine/cards.js';
 
 export const PLAYER = 0;
@@ -83,16 +83,61 @@ export class Battle {
     this.streetAgg = {}; // Boss 本手逐街的攻防倾向
     this.handAggressiveIntents = []; // Boss 本手的攻击性行动 {action, intent}
     this.playerAggressive = false; // 玩家本手是否主动下过注
-    this.openWindow = null; // 异议窗口 {id, deadline, line, windowMs}
+    this.openWindow = null; // 破绽窗口 {id, deadline, line, windowMs}
     this.lastBossAction = null;
     this.lastLine = null;
     this.lastPlayerAction = null;
     this.firstHandDone = false;
+    this.bossStreak = 0; // Boss 连胜手数（爬正向轴用）
+    this.recentHands = []; // 最近几手 Boss 的筹码净流向（势头）
   }
 
   #feed(kind, text) {
     this.feed.push({ kind, text });
     if (this.feed.length > 100) this.feed.shift();
+  }
+
+  /** 势头：最近几手 Boss 的净筹码流向（正=顺风）。 */
+  momentum() {
+    return this.recentHands.reduce((sum, n) => sum + n, 0);
+  }
+
+  /** 当前状态对某个心理事件的抗性（0..1，乘在转移概率上）。 */
+  #armor(name) {
+    const armor = this.boss.stateDef?.armor;
+    const v = armor?.[name];
+    return Number.isFinite(v) ? v : 1;
+  }
+
+  /** 心理事件统一出口：转移成功 → 事件（带行为提示与方向）+ feed。 */
+  #fire(events, name) {
+    const t = this.boss.mentalEvent(name, this.#armor(name));
+    if (!t) return null;
+    events.push({
+      type: 'mental',
+      from: t.from,
+      to: t.to,
+      cause: name,
+      causeName: t.causeName,
+      hint: t.hint,
+      down: isDownEvent(t.from, t.to),
+    });
+    const arrow = isDownEvent(t.from, t.to) ? '▼' : '▲';
+    this.#feed('mental', `${arrow} ${MOODS[t.from]} → ${MOODS[t.to]} · ${t.causeName}`);
+    return t;
+  }
+
+  /** 给玩家看的「倾向贴纸」：言语 Buff 还在生效的可见提示。 */
+  #effects() {
+    const out = [];
+    for (const b of this.boss.buffs) {
+      if (b.skill === 'taunt' && !out.some((e) => e.kind === 'taunt')) {
+        out.push({ kind: 'taunt', icon: '🔥', label: '被激怒', desc: '他更想加注、注更大' });
+      } else if (b.skill === 'pressure' && !out.some((e) => e.kind === 'pressure')) {
+        out.push({ kind: 'pressure', icon: '⛓', label: '被压制', desc: '他更想退缩' });
+      }
+    }
+    return out;
   }
 
   #recordHistory(actor, normalized, street) {
@@ -161,7 +206,7 @@ export class Battle {
       });
       events.push(...engineEvents);
       this.#recordHistory('boss', normalized, preStreet);
-      this.lastBossAction = { action: normalized.type, amount: normalized.to ?? 0 };
+      this.lastBossAction = { action: normalized.type, amount: normalized.to ?? 0, street: preStreet };
 
       this.boss.noteAction({ action: normalized.type, intent: decision.intent, street: preStreet });
       if (normalized.put > 0) {
@@ -237,8 +282,8 @@ export class Battle {
     this.#feed(
       'contradiction',
       kind === 'spoken_vs_bet'
-        ? '他的话和注码对不上——异议窗口已开启！'
-        : '他的打法前后矛盾——异议窗口已开启！',
+        ? '破绽出现：他的话和注码对不上 —— 抓住它！'
+        : '破绽出现：他的打法前后矛盾 —— 抓住它！',
     );
   }
 
@@ -270,14 +315,24 @@ export class Battle {
       events.push({ type: 'pot_move', to: winner, amount: pot });
     }
 
+    const bossWon = winner === BOSS;
     const bossLost = winner === PLAYER;
+    const isSplit = winner === 'split';
     const bossFolded = r.type === 'fold' && r.winner === PLAYER;
     const bluffCaught = r.type === 'showdown' && bossLost
       && this.handAggressiveIntents.some((a) => a.intent === 'BLUFF');
     const playerBluffSuccess = bossFolded && this.playerAggressive;
     const startStack = this.balance.stacks.boss;
-    const bigPotLost = bossLost && pot >= this.balance.bigPotLostRatio * startStack;
+    const bigPot = pot >= this.balance.bigPotLostRatio * startStack;
     const allInLost = bossLost && (d.allIn[BOSS] || this.handAggressiveIntents.some((a) => a.action === 'allin' && d.stacks[BOSS] === 0));
+    const allInWon = bossWon && (d.allIn[PLAYER] || d.allIn[BOSS]);
+
+    // 连胜与势头：正向轴（得意/神了）的入口材料
+    if (!isSplit) {
+      this.bossStreak = bossWon ? this.bossStreak + 1 : 0;
+      this.recentHands.push(bossWon ? pot : -pot);
+      while (this.recentHands.length > 5) this.recentHands.shift();
+    }
 
     // 本手 READ 是否“应验”：读了 + （抓到诈唬 或 点破矛盾）
     if (this.readUsedHand) {
@@ -285,27 +340,38 @@ export class Battle {
       this.readStreak = success ? this.readStreak + 1 : 0;
     }
 
-    const mentalFires = [];
-    const fire = (name) => {
-      const t = this.boss.mentalEvent(name);
-      if (!t) return;
-      mentalFires.push(t);
-      events.push({ type: 'mental', from: t.from, to: t.to, cause: name, causeName: t.causeName });
-      this.#feed('mental', `${MOODS[t.from]} → ${MOODS[t.to]} · ${t.causeName}`);
-    };
+    if (bossWon) {
+      // —— 赢：回血 / 爬正向轴 ——
+      if (allInWon) this.#fire(events, 'ALL_IN_WON');
+      else if (bigPot) this.#fire(events, 'BIG_POT_WON');
+      if (this.bossStreak === (this.balance.winStreakHands ?? 3)) this.#fire(events, 'WIN_STREAK');
+    } else if (bossLost) {
+      // —— 输：顺风被打断 + 输钱打击（吃 HOT/FLOW 护甲） ——
+      this.#fire(events, 'HAND_LOST');
+      if (allInLost) this.#fire(events, 'ALL_IN_LOST');
+      else if (bigPot) this.#fire(events, 'BIG_POT_LOST');
+      // —— 心理打击：不吃护甲，被看穿永远疼 ——
+      if (bluffCaught) this.#fire(events, 'BLUFF_CAUGHT');
+      else if (playerBluffSuccess) this.#fire(events, 'PLAYER_BLUFF_SUCCESS');
+    }
 
-    if (bluffCaught) fire('BLUFF_CAUGHT');
-    else if (playerBluffSuccess) fire('PLAYER_BLUFF_SUCCESS');
-    if (bigPotLost) fire('BIG_POT_LOST');
-    if (allInLost) fire('ALL_IN_LOST');
     if (this.readStreak >= 2) {
-      fire('CONSECUTIVE_READ_SUCCESS');
+      this.#fire(events, 'CONSECUTIVE_READ_SUCCESS');
       this.readStreak = 0;
     }
 
     // 害怕被认为胆小：弃牌之后，接下来两手会更想打回来
     if (bossFolded && this.playerAggressive) {
       this.boss.buffs.push({ skill: 'shame', decisions: 2 });
+    }
+
+    // 赢牌后的得意台词（赌徒赢了不会闭嘴）
+    if (bossWon && !isSplit) {
+      const quip = pickWinQuip(this.boss.state, this.balance.winQuipChance ?? 0.5, this.rng);
+      if (quip) {
+        events.push({ type: 'talk', line: quip });
+        this.#feed('talk', quip);
+      }
     }
 
     const winnerLabel = winner === 'split' ? '平分底池'
@@ -373,23 +439,25 @@ export class Battle {
     return { view: this.view(), events };
   }
 
-  /** READ：一条模糊的心理信息。每手有限次数。 */
+  /** READ：模糊信息 + 期望方向。每手有限次数。 */
   read() {
     this.#requirePlayerTurn();
     if (this.readsLeft <= 0) throw new GameError('这一手的 READ 已经用完', 'NO_READS');
     const events = [];
     this.readsLeft -= 1;
     this.readUsedHand = true;
-    const text = this.boss.read({ street: this.duel.street });
-    this.reads.unshift({ text }); // 最新的在最前（view.reads[0]）
+    const r = this.boss.read({ street: this.duel.street, momentum: this.momentum() });
+    // 最新的在最前（view.reads[0]）
+    this.reads.unshift({ text: r.text, lean: r.lean, leanLabel: r.leanLabel });
     if (this.reads.length > 3) this.reads.pop();
-    events.push({ type: 'read', text });
-    this.#feed('read', text);
+    events.push({ type: 'read', text: r.text, lean: r.lean, leanLabel: r.leanLabel });
+    this.#feed('read', r.text);
     return { view: this.view(), events };
   }
 
   /**
    * 言语技能：先改变 Boss 的心理/决策权重，再通过他的牌技结算。
+   * 神了(FLOW)免疫全部言语；得意(HOT)效果减半。
    * @param {'taunt'|'challenge'|'pressure'} skill
    */
   speak(skill) {
@@ -398,32 +466,41 @@ export class Battle {
     if ((this.speechLeft[skill] ?? 0) <= 0) throw new GameError('这一手已经用过了', 'NO_CHARGES');
     const events = [];
     this.speechLeft[skill] -= 1;
+    const immune = this.boss.speechImmune;
 
     let result;
     if (skill === 'challenge') {
       const c = this.boss.unresolvedContradiction();
       if (!c) {
         result = 'whiff';
+      } else if (immune) {
+        // 神了：根本听不进去 —— 矛盾保留，等他凉下来还能追问
+        result = 'resist';
+        this.#feed('speech', '质疑被无视——他根本听不进去（破绽还留着）');
       } else {
-        const t = this.boss.mentalEvent('LANGUAGE_WEAKNESS_HIT');
+        const t = this.#fire(events, 'LANGUAGE_WEAKNESS_HIT');
         result = t ? 'hit' : 'resist';
         c.resolved = true;
         if (this.openWindow?.id === c.id) this.openWindow = null;
         if (t) {
           this.boss.markExposed();
           this.exposeHand = true;
-          events.push({ type: 'mental', from: t.from, to: t.to, cause: 'LANGUAGE_WEAKNESS_HIT', causeName: t.causeName });
-          this.#feed('mental', `${MOODS[t.from]} → ${MOODS[t.to]} · ${t.causeName}`);
-          this.#feed('objection', '质疑命中！他的防线裂开了');
+          this.#feed('objection', '追问命中！他的防线裂开了');
         } else {
-          this.#feed('speech', '质疑命中了矛盾，但他硬扛住了');
+          this.#feed('speech', '追问命中了矛盾，但他硬扛住了');
         }
       }
     } else {
-      const scale = this.balance.speechEffects[skill].stateScale?.[this.boss.state] ?? 1;
-      result = scale >= 1 ? 'hit' : 'resist';
-      this.boss.applySpeechBuff(skill);
-      this.#feed('speech', `你${SPEECH_LABELS[skill]}了他——${result === 'hit' ? '他吃到了这一击' : '他表面不为所动'}`);
+      const eff = (this.balance.speechEffects[skill].stateScale?.[this.boss.state] ?? 1)
+        * this.boss.speechScale;
+      if (eff <= 0) {
+        result = 'resist'; // 免疫：不挂 Buff
+        this.#feed('speech', `你${SPEECH_LABELS[skill]}了他——他根本没在听`);
+      } else {
+        result = eff >= 1 ? 'hit' : 'resist';
+        this.boss.applySpeechBuff(skill);
+        this.#feed('speech', `你${SPEECH_LABELS[skill]}了他——${result === 'hit' ? '他吃到了这一击' : '他表面不为所动'}`);
+      }
     }
 
     const line = this.boss.react(skill, result);
@@ -433,7 +510,7 @@ export class Battle {
   }
 
   /**
-   * 异议！窗口内点击成功即命中（窗口只在检测到真实矛盾时开启）。
+   * 抓千！窗口内点击成功即命中（窗口只在检测到真实矛盾时开启）。
    */
   object(id) {
     const events = [];
@@ -456,19 +533,18 @@ export class Battle {
     this.boss.markExposed();
     this.exposeHand = true;
 
-    const t = this.boss.mentalEvent('CONTRADICTION_EXPOSED');
-    events.push({
+    const t = this.#fire(events, 'CONTRADICTION_EXPOSED');
+    events.unshift({
       type: 'objection_result',
       id: c.id,
       success: true,
       kind: c.kind,
       transition: t ? { from: t.from, to: t.to } : null,
+      hint: t?.hint ?? null,
     });
-    this.#feed('objection', t ? `异议命中！${MOODS[t.from]} → ${MOODS[t.to]}` : '异议命中！他嘴硬了一句，但防线松了');
-    if (t) {
-      events.push({ type: 'mental', from: t.from, to: t.to, cause: 'CONTRADICTION_EXPOSED', causeName: t.causeName });
-      this.#feed('mental', `${MOODS[t.from]} → ${MOODS[t.to]} · ${t.causeName}`);
-    }
+    this.#feed('objection', t
+      ? `抓千成功！${MOODS[t.from]} → ${MOODS[t.to]}`
+      : '抓千成功！他嘴硬了一句，但防线松了');
     return { view: this.view(), events, ok: true };
   }
 
@@ -514,6 +590,8 @@ export class Battle {
         legal: playerTurn ? mapLegal(d.legal(PLAYER)) : emptyLegal(),
         readsLeft: this.readsLeft,
         speech: { ...this.speechLeft },
+        // 手里有可追打的破绽（质疑按钮的点亮依据；不泄露任何矛盾细节）
+        canChallenge: Boolean(this.boss.unresolvedContradiction()),
       },
       boss: {
         chips: d.stacks[BOSS],
@@ -522,9 +600,12 @@ export class Battle {
         state: this.boss.state,
         face: this.boss.face,
         mood: this.boss.mood,
-        lastAction: this.lastBossAction,
+        stateHint: this.boss.stateHint, // 当前状态的打法含义（横幅/刻度用）
+        effects: this.#effects(),       // 言语命中的倾向贴纸
+        lastAction: this.lastBossAction, // 含 street：READ 时机高亮的依据
         lastLine: this.lastLine,
       },
+      // 破绽窗口（原异议）：只有 id/deadline/line，真假由服务端点击时判定
       objection: win ? { id: win.id, deadline: win.deadline, line: win.line } : null,
       reads: this.reads.slice(),
       history: this.history.slice(),

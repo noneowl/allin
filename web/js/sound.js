@@ -117,12 +117,18 @@ export const sfx = {
     noise({ dur: 0.03, gain: 0.035, band: 4200 });
   },
 
-  /** 「异议！」喊声。 */
+  /** 「抓千！」喊声。 */
   objection() {
     tone({ freq: 170, dur: 0.18, type: 'sawtooth', gain: 0.14, sweep: 320 });
     noise({ dur: 0.2, gain: 0.12, band: 1300 });
     tone({ freq: 880, dur: 0.1, type: 'square', gain: 0.07, delay: 0.06 });
     tone({ freq: 1240, dur: 0.12, type: 'square', gain: 0.05, delay: 0.13 });
+  },
+
+  /** 破绽出现时的心跳（两声低鸣，营造「屏住呼吸」）。 */
+  heartbeat() {
+    tone({ freq: 62, dur: 0.16, type: 'sine', gain: 0.22, delay: 0 });
+    tone({ freq: 55, dur: 0.2, type: 'sine', gain: 0.16, delay: 0.22 });
   },
 
   /** 打击命中（重拳 + 低音爆点）。 */

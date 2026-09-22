@@ -19,7 +19,11 @@ import * as fx from './effects.js';
 
 /* ================================================================= 常量 */
 
-const STATE_LABEL = { CALM: '冷静', SHAKEN: '动摇', TILT: '上头', BREAKING: '崩坏' };
+const STATE_LABEL = {
+  FLOW: '神了', HOT: '得意', CALM: '冷静', SHAKEN: '动摇', TILT: '上头', BREAKING: '崩坏',
+};
+// 情绪刻度顺序（与服务端 mental.js SCALE 一致）：下标变大 = 向坏（▼），变小 = 回血（▲）
+const STATE_ORDER = ['FLOW', 'HOT', 'CALM', 'SHAKEN', 'TILT', 'BREAKING'];
 const STREET_LABEL = { preflop: '翻牌前', flop: '翻牌圈', turn: '转牌圈', river: '河牌圈' };
 const ACTION_LABEL = { check: '过牌', call: '跟注', bet: '下注', raise: '加注', fold: '弃牌', allin: '全下' };
 const SPEECH_LABEL = { taunt: '挑衅', challenge: '质疑', pressure: '施压' };
@@ -89,6 +93,7 @@ const S = {
   guideClosedOnce: false, // 关闭过一次后才开始发上下文小提示
   usedRead: false,        // 本局已用过 READ（首手提示的触发条件）
   hintReadDone: false,
+  pendingLean: null,      // 最近一次 READ 的倾向标签（「你信吗？」问句用）
 
   polls: 0,               // 静默刷新次数（有界，防止无限轮询）
   pollTimer: null,
@@ -113,6 +118,8 @@ const D = {
   end: null, endCard: null, endHeart: null, endKicker: null, endTitle: null, endSub: null, btnAgain: null,
   guide: null, guideStep: null, guidePages: null, guideDots: null,
   guidePrev: null, guideSkip: null, guideNext: null, btnGuide: null,
+  stateScale: null, stateScaleSteps: null, stateHint: null,
+  bossEffects: null, mentalHint: null, readLean: null,
 };
 
 let boardRow = null;
@@ -295,6 +302,8 @@ function renderBoss(view) {
     D.bossAct.hidden = true;
   }
 
+  renderEffects(boss);
+
   // 台词气泡：无打字进行时才整体替换（打字机由事件驱动）
   const line = typeof boss.lastLine === 'string' ? boss.lastLine : '';
   if ((D.bubbleText.dataset.line ?? '') !== line) {
@@ -329,9 +338,78 @@ function renderCenter(view) {
   D.playerDealer.hidden = view.button !== 0;
   D.bossDealer.hidden = view.button !== 1;
 
+  // 情绪刻度：当前格点亮 + 打法含义
+  const state = typeof view.boss?.state === 'string' ? view.boss.state : 'CALM';
+  if (D.stateScaleSteps) {
+    for (const step of D.stateScaleSteps.children) {
+      step.classList.toggle('is-active', step.dataset.state === state);
+    }
+  }
+  const hint = typeof view.boss?.stateHint === 'string' ? view.boss.stateHint : '';
+  if (D.stateHint) {
+    D.stateHint.textContent = hint || '—';
+    D.stateHint.title = hint;
+  }
+
   const playing = view.phase === 'playing';
   D.bossZone.classList.toggle('is-turn', playing && view.toAct === 1);
   D.playerZone.classList.toggle('is-turn', playing && view.toAct === 0);
+}
+
+/** 言语命中的倾向贴纸：心理攻击落回牌桌的可见形态（效果耗尽即消失）。 */
+function renderEffects(boss) {
+  if (!D.bossEffects) return;
+  const effects = Array.isArray(boss.effects) ? boss.effects : [];
+  const sig = effects.map((e) => `${e.kind}:${e.desc}`).join('|');
+  if (D.bossEffects.dataset.sig === sig) return;
+  D.bossEffects.dataset.sig = sig;
+  clear(D.bossEffects);
+  for (const e of effects) {
+    D.bossEffects.appendChild(el('span', { class: `effect-chip effect-chip--${e.kind ?? ''}` }, [
+      el('span', { class: 'effect-chip__icon', text: e.icon ?? '•' }),
+      el('b', { text: e.label ?? '' }),
+      el('i', { text: e.desc ?? '' }),
+    ]));
+  }
+  D.bossEffects.hidden = effects.length === 0;
+}
+
+/** 他刚在这条街下注/加注？ → READ 的黄金时机。 */
+function bossJustBet(view) {
+  const la = view.boss?.lastAction;
+  if (!la || la.street !== view.street) return false;
+  return la.action === 'bet' || la.action === 'raise' || la.action === 'allin';
+}
+
+/** READ 倾向标签（判断轴，不是答案）。 */
+function setLeanChip(item) {
+  if (!D.readLean) return;
+  const label = item && item.lean ? item.leanLabel : null;
+  if (!label) {
+    D.readLean.hidden = true;
+    D.readLean.textContent = '';
+    D.readLean.dataset.lean = '';
+    return;
+  }
+  if (D.readLean.dataset.lean === label) return;
+  D.readLean.dataset.lean = label;
+  D.readLean.textContent = `💛 ${label}`;
+  D.readLean.hidden = false;
+}
+
+/**
+ * 心理操作区的情境提示 —— 回答三个「什么时候用」：
+ * 有倾向问句 > 有破绽可追问 > READ 黄金时机 > 默认循环提示。
+ */
+function updateMentalHint(view, { readHot = false } = {}) {
+  if (!D.mentalHint) return;
+  let text;
+  if (S.pendingLean) text = `倾向：${S.pendingLean} —— 你信吗？`;
+  else if (view?.player?.canChallenge && !S.objection) text = '他的话有破绽 —— 质疑可以追打';
+  else if (readHot) text = '他刚下注 · 此刻 READ 最有价值';
+  else text = '瞄准 READ · 布局言语 · 破绽亮起按抓千';
+  if (D.mentalHint.textContent !== text) D.mentalHint.textContent = text;
+  D.mentalHint.classList.toggle('is-question', Boolean(S.pendingLean));
 }
 
 function renderPlayer(view) {
@@ -381,6 +459,7 @@ function renderSidebar(view) {
   const readsArr = Array.isArray(view.reads) ? view.reads : [];
   // 「最近 3 条」以 reads[0] 为最新；feed 缺 read 条目时兜底取其最后一条
   updateReadLatest(readsArr[0]?.text ?? latestRead ?? '', { flash: false });
+  if (readsArr[0]) setLeanChip(readsArr[0]); // 刷新页面后倾向标签还在
 
   const left = Math.max(0, Math.round(Number(view.player?.readsLeft) || 0));
   D.readLeftPill.textContent = `本手 ${left} 次`;
@@ -447,8 +526,11 @@ function renderActionbar(view) {
   const mentalOk = playing && !busy;
   const reads = Math.max(0, Math.round(Number(view.player?.readsLeft) || 0));
   D.readBadge.textContent = `×${reads}`;
+  const readHot = myTurn && reads > 0 && bossJustBet(view);
   D.btnRead.disabled = !(mentalOk && reads > 0);
+  D.btnRead.classList.toggle('is-hot', readHot); // 他刚下注 → READ 呼吸高亮
 
+  const canChallenge = view.player?.canChallenge === true;
   const speech = (view.player?.speech && typeof view.player.speech === 'object') ? view.player.speech : {};
   for (const [btn, badge, key] of [
     [D.btnTaunt, D.tauntLeft, 'taunt'],
@@ -457,8 +539,12 @@ function renderActionbar(view) {
   ]) {
     const n = Math.max(0, Math.round(Number(speech[key]) || 0));
     badge.textContent = `×${n}`;
-    btn.disabled = !(mentalOk && n > 0);
+    // 质疑（清算）只有「手里有破绽」时才亮 —— 教会玩家别乱按
+    const armed = key !== 'challenge' || canChallenge;
+    btn.disabled = !(mentalOk && n > 0 && armed);
+    if (key === 'challenge') btn.classList.toggle('is-armed', Boolean(canChallenge && n > 0 && mentalOk));
   }
+  updateMentalHint(view, { readHot });
 
   const [text, mode] = statusFor(view, busy);
   setStatus(text, mode);
@@ -499,6 +585,7 @@ function openObjection(obj, windowMs, { sound = true } = {}) {
   D.objectionLine.textContent = S.objection.line;
   D.btnObjection.disabled = false;
   D.bubble.classList.add('is-hot');
+  if (D.app) D.app.classList.add('is-catchtime'); // 三拍：屏息态（气泡+注码发亮）
   if (sound) sfx.notify();
   tickObjection();
   S.objTimer = setInterval(tickObjection, 80);
@@ -530,6 +617,7 @@ function clearObjection() {
     D.btnObjection.disabled = false;
   }
   if (D.bubble) D.bubble.classList.remove('is-hot');
+  if (D.app) D.app.classList.remove('is-catchtime');
 }
 
 async function onObjectionClick() {
@@ -674,10 +762,17 @@ async function playEvent(ev) {
   await player(ev);
 }
 
-/** mental / objection_result 共用：换色换表情 + 横幅 + 音效 + feed。 */
-function showMental(from, to, cause) {
+/** mental / objection_result 共用：换色换表情 + 横幅（含行为后果）+ 音效 + feed。 */
+function showMental(from, to, cause, hint = null, down = null) {
   const fromT = STATE_LABEL[from] ?? String(from ?? '');
   const toT = STATE_LABEL[to] ?? String(to ?? '');
+  const orderFrom = STATE_ORDER.indexOf(from);
+  const orderTo = STATE_ORDER.indexOf(to);
+  const isDown = down === null || down === undefined
+    ? (orderFrom < 0 || orderTo < 0 ? true : orderTo > orderFrom)
+    : Boolean(down);
+  const arrow = isDown ? '▼' : '▲';
+
   if (to) D.bossZone.dataset.state = to;
   const finalBoss = S.view?.boss;
   if (finalBoss && finalBoss.state === to) {
@@ -686,13 +781,17 @@ function showMental(from, to, cause) {
   } else {
     D.bossMood.textContent = toT; // face 保持服务端给的上一次值，终态渲染时校正
   }
-  sfx.mental();
+  // 回血用明亮提示音，打击用沉心理音 —— 方向感也要能听出来
+  if (isDown) sfx.mental();
+  else sfx.notify();
+
   const causeText = CAUSE_LABEL[cause] ?? (cause ? String(cause) : '');
   appendCapped(D.important, feedNode({
     kind: 'mental',
-    text: `${fromT} → ${toT}${causeText ? ` · ${causeText}` : ''}`,
+    text: `${arrow} ${fromT} → ${toT}${causeText ? ` · ${causeText}` : ''}${hint ? ` · ${hint}` : ''}`,
   }));
-  return fx.mentalBanner(fromT, toT, causeText);
+  // 横幅副标题优先显示「他接下来会怎么变」——命中必须说清因果
+  return fx.mentalBanner(fromT, toT, hint || causeText, { recover: !isDown });
 }
 
 async function typeBossLine(line) {
@@ -833,6 +932,10 @@ const EVENT_PLAYERS = {
     await typewrite(D.readLatest, text, { ms: 24 });
     D.readLatest.dataset.text = text;
     flashReadLatest();
+    // 倾向标签 = 判断轴；随后行动栏给出「你信吗？」
+    setLeanChip({ lean: ev.lean, leanLabel: ev.leanLabel });
+    S.pendingLean = ev.lean ? ev.leanLabel : null;
+    updateMentalHint(S.view, {});
     await fx.sleep(520);
   },
 
@@ -861,16 +964,29 @@ const EVENT_PLAYERS = {
   },
 
   async mental(ev) {
-    await showMental(ev.from, ev.to, ev.causeName ?? ev.cause);
+    await showMental(ev.from, ev.to, ev.causeName ?? ev.cause, ev.hint ?? null, ev.down);
   },
 
   async contradiction(ev) {
     sfx.notify();
     D.bubble.classList.add('is-hot');
-    fx.popup(D.bubble, '检测到矛盾', 'crit');
-    const why = CONTRADICTION_LABEL[ev.kind] ?? (ev.kind ? String(ev.kind) : '出现矛盾');
-    appendCapped(D.important, feedNode({ kind: 'contradiction', text: `${why} · 可提出异议` }));
-    await fx.sleep(760);
+    // 三拍的第三拍：破绽连线 —— 台词气泡与注码一起发亮、心跳两声、画面进入「屏息」态
+    if (D.app) D.app.classList.add('is-catchtime');
+    sfx.heartbeat();
+    setTimeout(() => sfx.heartbeat(), 430);
+    const why = CONTRADICTION_LABEL[ev.kind] ?? (ev.kind ? String(ev.kind) : '出现破绽');
+    fx.popup(D.bubble, '破绽出现', 'crit');
+    appendCapped(D.important, feedNode({ kind: 'contradiction', text: `${why} · 按下抓千！` }));
+
+    // 首次破绽 = 教学定格（一次性）：不挡住队列，窗口照常紧接着打开
+    let coached = false;
+    try { coached = localStorage.getItem('allin.coach.v1') === '1'; } catch { coached = true; }
+    if (!coached) {
+      try { localStorage.setItem('allin.coach.v1', '1'); } catch { /* 忽略 */ }
+      fx.hitstop(380);
+      fx.bigText('破绽！', why, { tone: 'red', holdMs: 1500 });
+    }
+    await fx.sleep(600);
   },
 
   async objection_open(ev) {
@@ -884,23 +1000,26 @@ const EVENT_PLAYERS = {
       await typeBossLine(line); // 异议窗口 = 打字机结束 + 余下时间（deadline 为准）
     }
     openObjection({ id: ev.id, deadline: ev.deadline, line }, windowMs, { sound: true });
-    fx.popup(D.bubble, '可以异议！', 'crit');
-    appendCapped(D.important, feedNode({ kind: 'objection', text: '矛盾出现：立即提出异议！' }));
+    fx.popup(D.bubble, '就是现在 — 抓千！', 'crit');
+    appendCapped(D.important, feedNode({ kind: 'objection', text: '破绽亮起：倒计时内按下抓千！' }));
     await fx.sleep(260);
   },
 
   async objection_result(ev) {
     clearObjection();
     if (ev.success) {
-      await fx.impact({ title: '异议命中！', sub: 'CONTRADICTION', tone: 'red', sfxName: 'objection' });
+      await fx.impact({ title: '抓千成功！', sub: 'CAUGHT', tone: 'red', sfxName: 'objection' });
       const tr = ev.transition;
-      if (tr && tr.to) await showMental(tr.from, tr.to, 'OBJECTION');
-      appendCapped(D.important, feedNode({ kind: 'objection', text: '异议成立！Boss 的谎言被戳穿' }));
+      if (tr && tr.to) await showMental(tr.from, tr.to, 'OBJECTION', ev.hint ?? null);
+      appendCapped(D.important, feedNode({
+        kind: 'objection',
+        text: tr ? '抓千成功！心理防线崩了一格' : '抓千成功！他嘴硬了一句，但防线松了',
+      }));
     } else {
       sfx.miss();
-      fx.popup(D.bubble, '异议无效', 'miss');
+      fx.popup(D.bubble, '没抓住', 'miss');
       fx.screenShake(300, 5);
-      appendCapped(D.important, feedNode({ kind: 'objection', text: '异议失败：这句并不构成矛盾' }));
+      appendCapped(D.important, feedNode({ kind: 'objection', text: '抓千失败：窗口已经过去' }));
       await fx.sleep(560);
     }
   },
@@ -1156,6 +1275,7 @@ function schedulePoll() {
 async function doAction(action, amount) {
   unlockAudio();
   S.polls = 0;
+  S.pendingLean = null; // 已经做出回答 —— 「你信吗？」收起
   if (S.pollTimer !== null) {
     clearTimeout(S.pollTimer);
     S.pollTimer = null;
@@ -1362,6 +1482,13 @@ function bindDom() {
   D.guideNext = $('#guide-next');
   D.btnGuide = $('#btn-guide');
   buildGuide();
+
+  D.stateScale = $('#state-scale');
+  D.stateScaleSteps = $('#state-scale-steps');
+  D.stateHint = $('#state-hint');
+  D.bossEffects = $('#boss-effects');
+  D.mentalHint = $('#mental-hint');
+  D.readLean = $('#read-lean');
 }
 
 async function boot(retries = 4) {

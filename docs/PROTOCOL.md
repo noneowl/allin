@@ -51,16 +51,21 @@
       "allin": 940
     },
     "readsLeft": 2,                       // 本手剩余 READ 次数
-    "speech": { "taunt": 1, "challenge": 1, "pressure": 1 }  // 本手剩余次数
+    "speech": { "taunt": 1, "challenge": 1, "pressure": 1 },  // 本手剩余次数
+    "canChallenge": false                 // 手里有可追打的破绽（质疑按钮的点亮依据，不泄露细节）
   },
 
   "boss": {
     "chips": 1060, "bet": 60,
     "hole": null,                          // 仅摊牌时为 ["9c","9d"]，其余时候 null
-    "state": "CALM" | "SHAKEN" | "TILT" | "BREAKING",
-    "face": "😏",                          // 状态表情（服务端给，客户端不要自己算）
-    "mood": "冷静",                         // 状态中文名，用于头像下方标签
-    "lastAction": { "action": "raise", "amount": 120 } | null,
+    "state": "CALM" | "SHAKEN" | "TILT" | "BREAKING" | "HOT" | "FLOW",
+    "face": "😏",                          // 状态表情（六状态各一个，服务端给）
+    "mood": "冷静",                         // 冷静|动摇|上头|崩坏|得意|神了
+    "stateHint": "冷静难读、也不送分 —— …",   // 当前状态的打法含义（情绪刻度下的说明行）
+    "effects": [                           // 言语命中的倾向贴纸（效果耗尽即消失）
+      { "kind": "taunt", "icon": "🔥", "label": "被激怒", "desc": "他更想加注、注更大" }
+    ],
+    "lastAction": { "action": "raise", "amount": 120, "street": "flop" },  // street 是 READ 时机高亮的依据
     "lastLine": "这一手，你最好别碰。"        // 最近一句台词（刷新页面后用于重建气泡）
   },
 
@@ -69,7 +74,9 @@
     "line": "这一手你最好直接弃。"
   },
 
-  "reads": [{ "text": "他似乎非常期待你弃牌。" }],   // 最近 3 条 READ 结果，reads[0] 最新
+  "reads": [{ "text": "他似乎非常期待你弃牌。", "lean": "fold", "leanLabel": "他想让你弃牌" }],
+  //   ↑ 最近 3 条，reads[0] 最新。lean 是「他希望你出什么牌」的判断轴（fold/call/trap/unsure），
+  //     不是答案；雾化/状态线/势头线 lean=null
   "history": [                              // 本手+历史行动记录，服务端截断到 60 条
     { "handNo": 7, "street": "preflop", "actor": "boss", "action": "raise", "amount": 120 }
   ],
@@ -86,9 +93,13 @@
 - `view.boss.hole` 非 null 只可能出现在摊牌后（`phase !== 'playing'` 或该手已结算）；
 - `view` 里永远没有 `deck`、`intent`、`claim`、`contradiction`、Boss 内部权重等字段；
   字符串值经精确比对，Boss 底牌不会以任何形式出现（含 `toAct` 这类子串误报的坑）；
-- 异议窗口只有 `id / deadline / line`，**是否真的构成矛盾由服务端点击时判定**，
-  客户端绝不能自行判断「这句是谎言」；无效的窗口根本不会开；
-- 矛盾检测只针对真正的攻击动作（bet / raise / allin）——跟注与溜入永远不构成「言行不一」。
+- 破绽窗口（wire 字段名仍为 `objection*`）只有 `id / deadline / line`，
+  **是否真的构成矛盾由服务端点击时判定**，无效窗口根本不会开；
+- 矛盾检测只针对真正的攻击动作（bet / raise / allin）——跟注与溜入永远不构成「言行不一」；
+- 心理状态是**六格双向刻度**（`SCALE = FLOW·HOT·CALM·SHAKEN·TILT·BREAKING`）：
+  赢钱事件可回血（`BIG_POT_WON`/`ALL_IN_WON`/`WIN_STREAK`），打击事件向下，
+  抓千/言语类事件永不回血；HOT 有输钱护甲、FLOW 对言语免疫且 READ 雾化。
+- 用户可见文案里「异议」已改称「抓千 / 破绽」，但事件类型与字段名保持稳定。
 
 ## events（按顺序播放的动画队列）
 
@@ -101,16 +112,20 @@
 { "type": "action",      "seat": 1, "action": "raise", "amount": 120, "put": 110, "potAfter": 240, "allIn": false }
 { "type": "street",      "street": "flop", "cards": ["As","7d","2c"] }   // turn/river 每次 1 张
 { "type": "talk",        "line": "这一手，你最好别碰。" }                 // Boss 台词（打字机）
-{ "type": "read",        "text": "他似乎非常期待你弃牌。" }               // READ 结果
+{ "type": "read",        "text": "他似乎非常期待你弃牌。",
+                         "lean": "fold", "leanLabel": "他想让你弃牌" }    // READ 结果 + 倾向标签
 { "type": "speech",      "skill": "taunt", "result": "hit" | "resist" | "whiff",
                          "line": "就这点胆子？" }                         // Boss 对言语的回应
 { "type": "mental",      "from": "CALM", "to": "SHAKEN", "cause": "BLUFF_CAUGHT",
-                         "causeName": "诈唬被抓" }          // causeName 是中文，优先用于展示
+                         "causeName": "诈唬被抓",
+                         "hint": "动摇 · 漏话变多……", "down": true }
+// ↑ 六状态双向转移；hint = 新状态的打法含义（横幅副标题），down=false 表示回血（向好，▲）          // causeName 是中文，优先用于展示
 { "type": "contradiction","id": 3, "kind": "spoken_vs_bet" | "behavior" } // 检测到矛盾（先于 objection_open）
 { "type": "objection_open", "id": 3, "deadline": 1730000000000, "line": "…", "windowMs": 2400 }
 { "type": "objection_result", "id": 3, "success": true,
     "kind": "spoken_vs_bet",
-    "transition": { "from": "CALM", "to": "SHAKEN" } | null }             // success=false 时为 null
+    "transition": { "from": "CALM", "to": "SHAKEN" },
+    "hint": "动摇 · 漏话变多……" }                                // success=false 时 transition=null
 { "type": "showdown", "hands": [{ "seat": 0, "hole": ["As","Th"], "handName": "两对", "winner": true },
                                  { "seat": 1, "hole": ["9c","9d"], "handName": "一对", "winner": false }],
                       "split": false }
@@ -130,12 +145,14 @@
 
 | 触发 | 演出 |
 | --- | --- |
-| `objection_result(success)` | Hitstop → 头像震动 → 屏幕轻震 → 白闪 → 「异议命中！CONTRADICTION」弹字 → 音效 |
+| `objection_result(success)` | Hitstop → 头像震动 → 屏幕轻震 → 白闪 → 「抓千成功！CAUGHT」弹字 → 音效 |
 | `hand_end(bluffCaught)` | 同上，弹字「READ SUCCESS / 抓到诈唬」 |
-| `mental` | 状态横幅（CALM→SHAKEN 等）+ 头像换表情换色 + 音效 |
+| `mental` | 状态横幅：副标题 = `hint`（新状态的行为后果）；`down` 用打击音+深色，回血用明亮音+绿色横幅；情绪刻度当前格切换 |
+| `contradiction` | **三拍第三拍**：心跳两声、台词气泡与 Boss 注码同时发红脉冲、牌桌压暗进入屏息态；首次出现触发教学定格（localStorage 一次性） |
 | `pot_move` | 底池数字飞向赢家筹码，输家筹码倒数减少 |
 | `allin` 动作 | 牌桌轻微 zoom，`showdown` 手牌逐张翻开，逐张音效 |
-| `speech(result=hit)` | 小打击弹字（不占用异议 hitstop） |
+| `speech(result=hit)` | Boss 身上出现倾向贴纸（🔥被激怒 / ⛓被压制，持续到 Buff 耗尽） |
+| READ 事件 | 台词打字机 + 倾向标签 chip + 行动栏「你信吗？」问句（下次行动收起） |
 
 ## 节奏建议（客户端自行掌握）
 

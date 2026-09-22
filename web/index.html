@@ -40,6 +40,7 @@
             </div>
 
             <div class="talkzone">
+              <div class="effect-chips" id="boss-effects" hidden></div>
               <div class="bubble" id="boss-bubble">
                 <span class="bubble__label">BOSS 台词</span>
                 <span class="bubble__text" id="bubble-text"></span><span class="caret" id="bubble-caret"></span>
@@ -54,9 +55,9 @@
                   <span class="objection__ms num" id="obj-ms">0</span>
                 </div>
                 <button class="objection__btn" id="btn-objection" type="button">
-                  异议！<small>OBJECTION</small>
+                  抓千！<small>CATCH</small>
                 </button>
-                <div class="objection__hint">检测到矛盾 · 立即提出异议</div>
+                <div class="objection__hint">他的话和注码对不上</div>
                 <div class="objection__line" id="objection-line"></div>
               </div>
             </div>
@@ -69,6 +70,18 @@
             <div class="felt__watermark">TEXAS HOLD'EM · BOSS 战</div>
             <div class="felt__center">
               <div class="street" id="street-badge">翻牌前</div>
+              <div class="state-scale" id="state-scale">
+                <span class="state-scale__label">情绪刻度</span>
+                <div class="state-scale__steps" id="state-scale-steps">
+                  <span class="state-scale__step" data-state="FLOW">✨ 神了</span>
+                  <span class="state-scale__step" data-state="HOT">🤑 得意</span>
+                  <span class="state-scale__step" data-state="CALM">😏 冷静</span>
+                  <span class="state-scale__step" data-state="SHAKEN">😳 动摇</span>
+                  <span class="state-scale__step" data-state="TILT">😡 上头</span>
+                  <span class="state-scale__step" data-state="BREAKING">🤯 崩坏</span>
+                </div>
+              </div>
+              <div class="state-hint" id="state-hint" title="">—</div>
               <div class="card-row card-row--board" id="board"></div>
               <div class="pot" id="pot">
                 <span class="pot__label">底池 POT</span>
@@ -121,6 +134,7 @@
           </header>
           <div class="readbox" id="readbox">
             <div class="readbox__latest" id="read-latest">尚未进行 READ。</div>
+            <div class="readbox__lean" id="read-lean" hidden></div>
             <div class="feed feed--reads" id="reads"></div>
           </div>
         </section>
@@ -163,17 +177,20 @@
       </div>
 
       <div class="ab__mental" id="ab-mental">
-        <div class="ab__mental-title">心理操作</div>
-        <button class="btn mental mental--read" id="btn-read" type="button" title="读取 Boss 的模糊倾向">
+        <div class="ab__mental-col">
+          <div class="ab__mental-title">心理操作</div>
+          <div class="mental-hint" id="mental-hint">瞄准 · 布局 · 看准破绽再出手</div>
+        </div>
+        <button class="btn mental mental--read" id="btn-read" type="button" title="读取 Boss 的模糊倾向与期望方向">
           READ <span class="mental__left num" id="read-left-badge">×2</span>
         </button>
-        <button class="btn mental" id="btn-taunt" type="button">
+        <button class="btn mental" id="btn-taunt" type="button" title="让他更凶、更大注">
           挑衅 <span class="mental__left num" id="taunt-left">×1</span>
         </button>
-        <button class="btn mental" id="btn-challenge" type="button">
+        <button class="btn mental mental--challenge" id="btn-challenge" type="button" title="追打已经暴露的破绽">
           质疑 <span class="mental__left num" id="challenge-left">×1</span>
         </button>
-        <button class="btn mental" id="btn-pressure" type="button">
+        <button class="btn mental" id="btn-pressure" type="button" title="让他更想退缩，掩护你的诈唬">
           施压 <span class="mental__left num" id="pressure-left">×1</span>
         </button>
       </div>
@@ -211,7 +228,7 @@
             <li>他的筹码归零 → <span class="hi">BREAK</span>，战斗胜利；你的归零 → 战斗失败</li>
             <li>没有技能栏 —— <strong>所有攻防都通过扑克动作完成</strong>，牌桌本身就是整场战斗</li>
           </ul>
-          <div class="guide__loop">读他 → 影响他 → 让他失控 → 他在牌桌上犯错 → 你赢走筹码</div>
+          <div class="guide__loop">读他 → 影响他 → 抓破绽 → 他在牌桌上犯错 → 你赢走筹码</div>
         </section>
 
         <section class="guide__page">
@@ -227,41 +244,57 @@
         </section>
 
         <section class="guide__page">
-          <h3>三个心理操作（每手限次）</h3>
+          <h3>瞄准：READ —— 什么时候读、读到什么</h3>
           <ul>
-            <li><span class="hi">READ ×2</span>：一条模糊的心理提示 —— 是情绪和倾向，<strong>不是答案</strong>。
-              「他似乎非常期待你弃牌」→ 自己判断他是在演还是真的有货</li>
-            <li><span class="hi">挑衅 ×1</span>：让他更凶、注更大、更爱演 —— 然后准备好大注抓他</li>
-            <li><span class="hi">质疑 ×1</span>：攻击他的言行矛盾，命中直接动摇他的心理</li>
-            <li><span class="hi">施压 ×1</span>：让他更想退缩 —— 掩护你自己的诈唬</li>
-          </ul>
-          <p>言语不会直接偷走他的筹码：<strong>它先改变他的心态，再通过他的下注把错误付给你</strong>。</p>
-        </section>
-
-        <section class="guide__page">
-          <h3>异议窗口：看见破绽就按</h3>
-          <ul>
-            <li>他说的话和下的注<span class="hi">对不上</span>（放狠话却下小注）、或打法
-              <span class="hi">前后矛盾</span>（一路示弱突然超池全推）时，台词播放期间会出现红色
-              <strong>「异议！」</strong>按钮</li>
-            <li>倒计时内点击 → 打击演出 + <strong>他的心理状态恶化一档</strong></li>
-            <li>窗口<span class="hi">只在真矛盾时出现</span> —— 假窗口根本不存在，看到就按</li>
-            <li>错过了也别急：本手内还可以用 <strong>质疑</strong> 追打这条矛盾</li>
+            <li><span class="hi">时机</span>：他下注/加注、轮到你决定时，READ 按钮会<span class="hi">呼吸发光</span> ——
+              他开口之后、你回答之前，是读心的黄金瞬间（每手 ×2）</li>
+            <li><span class="hi">读到两行</span>：一行模糊的心理信息 + 一个<span class="hi">倾向标签</span> ——
+              「他想让你弃牌」「他欢迎你跟」「他在等你犯错」「他自己也没底」</li>
+            <li>标签告诉你<strong>他希望你出什么牌</strong>，不是他有什么牌 —— 他完全可能在演</li>
+            <li>判断公式：<strong>倾向 × 你的牌 × 他的注码</strong>，三方对不上就有鬼 —— 信他还是逆着他打，由你决定</li>
           </ul>
         </section>
 
         <section class="guide__page">
-          <h3>他在崩坏，就是你在赢</h3>
+          <h3>布局：挑衅 · 施压（+ 贴纸反馈）</h3>
           <ul>
-            <li>心理状态单向恶化：<span class="hi">冷静 😏 → 动摇 😳 → 上头 😡 → 崩坏 🤯</span></li>
-            <li>越被动越明显：台词变嘴硬、诈唬变多、注码变大、弃牌阈值下降 ——
-              头像表情、配色、状态标签都会告诉你</li>
-            <li>崩坏后他甚至会<span class="hi">自相矛盾地失控</span>，READ 也变得清晰 ——
-              越到后面越好读</li>
+            <li><span class="hi">挑衅</span>：想让他反抗时用 —— 你拿着大牌，希望他加注别跑 → 命中后他身上挂
+              <strong>🔥被激怒</strong>（更想加注、注更大）</li>
+            <li><span class="hi">施压</span>：你准备诈唬时先压他 → 挂 <strong>⛓被压制</strong>（更想退缩），
+              然后放心开大注</li>
+            <li><span class="hi">贴纸</span>会一直挂到效果结束 —— 你下注时抬眼就能看见，
+              <strong>这就是心理攻击落回牌桌的形态</strong></li>
+            <li>得意(🤑)的他言语减半、神了(✨)的他<span class="hi">完全免疫</span> —— 顺风时别嘴他</li>
           </ul>
+        </section>
+
+        <section class="guide__page">
+          <h3>抓千：破绽出现的三拍</h3>
+          <ul>
+            <li><strong>① 他下注</strong> —— 注码插在桌上，大注小注一眼可见</li>
+            <li><strong>② 他说话</strong> —— 台词逐字打出，狠话软话一眼可见</li>
+            <li><strong>③ 破绽</strong> —— 话音落下，<span class="hi">话和注对不上</span>时：
+              气泡和注码同时发亮、心跳响起 → 倒计时内按下 <strong>「抓千！」</strong></li>
+            <li>命中 = <strong>心理防线掉一格</strong>（横幅会告诉你他接下来会怎么变）</li>
+            <li>窗口只在<span class="hi">真矛盾</span>时出现，假窗口不存在；错过了还能用
+              <strong>质疑</strong>追打同一句假话（按钮只在「他的话有破绽」时亮起）</li>
+          </ul>
+        </section>
+
+        <section class="guide__page">
+          <h3>情绪刻度：他在崩坏，就是你在赢</h3>
+          <table class="guide__map">
+            <tr><td>✨ 神了</td><td>纯利 · 读不出、说不动 —— 但命短，输一手就掉档，<strong>弃牌熬他</strong></td></tr>
+            <tr><td>🤑 得意</td><td>抗言语、注更狠；但会空城大注、敢 hero call —— <strong>抓他的大注</strong></td></tr>
+            <tr><td>😏 冷静</td><td>难读、不送分 —— <strong>主动搞他，拖出舒适区</strong></td></tr>
+            <tr><td>😳 动摇</td><td>更凶；但漏话最多 —— <strong>多读、多抓</strong></td></tr>
+            <tr><td>😡 上头</td><td>暴力能吓走你；但弃得少、爱接全下 —— <strong>大注推他</strong></td></tr>
+            <tr><td>🤯 崩坏</td><td>纯弊 · 信息全漏 —— <strong>全力收割</strong></td></tr>
+          </table>
+          <p>刻度是<span class="hi">双向拔河</span>：你点破他 → 掉格；他赢大底池/连赢 → <strong>回血爬正向轴</strong>。
+            你输给他不只是输筹码，还会给他续命。</p>
           <p>键盘：<strong>F</strong> 弃牌 · <strong>C</strong> 过牌/跟注 · <strong>A</strong> 全下 ·
             <strong>↵</strong> 提交加注 · 左下角 <strong>?</strong> 随时重看本引导。</p>
-          <div class="guide__loop">先打几手，观察他的基线 → READ 验证你的猜想 → 抓一次诈唬 → 激怒他 → 收割</div>
         </section>
       </div>
 
