@@ -113,6 +113,19 @@ export class SettingsDialog {
       type: 'password',
       placeholder: this.draft.apiKeyHint ? `已保存 ${this.draft.apiKeyHint}（留空则保持不变）` : '粘贴 API Key',
     });
+    // The stored key never reaches the browser, so the field is blank even when
+    // one is saved. Blank therefore means "keep it"; wiping it is this button.
+    const keyControl = el('div', { class: 'field__row' }, [
+      keyInput,
+      this.draft.hasApiKey
+        ? el('button', {
+            class: 'btn',
+            type: 'button',
+            text: '清除已保存的 Key',
+            on: { click: () => this.#clearKey() },
+          })
+        : null,
+    ]);
 
     const fetchButton = el('button', {
       class: 'btn',
@@ -154,7 +167,7 @@ export class SettingsDialog {
 
       this.#field(
         'API Key',
-        keyInput,
+        keyControl,
         this.draft.apiKeySource && this.draft.apiKeySource !== 'config'
           ? `当前来自环境变量 ${this.draft.apiKeySource}（环境变量优先于这里保存的值）`
           : '只保存在本机 .data/config.json，不会发送到浏览器之外的地方',
@@ -410,6 +423,20 @@ export class SettingsDialog {
     this.#render();
   }
 
+  async #clearKey() {
+    try {
+      const result = await api.saveConfig({ clearApiKey: true });
+      this.draft.apiKey = undefined;
+      this.draft.hasApiKey = false;
+      this.draft.apiKeyHint = null;
+      this.onToast?.({ level: 'success', message: '已清除保存的 API Key' });
+      this.close();
+      await this.onSaved?.(result.config, { restart: false });
+    } catch (err) {
+      this.onToast?.({ level: 'error', message: `清除失败：${err.message}` });
+    }
+  }
+
   async #save(restart) {
     const patch = {
       provider: this.draft.provider,
@@ -424,8 +451,11 @@ export class SettingsDialog {
       postHandTalk: this.draft.postHandTalk,
       table: { ...this.draft.table },
     };
-    // Only send the key when the user actually typed one.
-    if (this.draft.apiKey !== undefined && this.draft.apiKey !== null) patch.apiKey = this.draft.apiKey;
+    // Only send the key when the user actually typed one. Leaving the field
+    // blank means "keep the saved key" — sending '' here is what once wiped it.
+    if (typeof this.draft.apiKey === 'string' && this.draft.apiKey.trim()) {
+      patch.apiKey = this.draft.apiKey.trim();
+    }
 
     try {
       const result = await api.saveConfig(patch);

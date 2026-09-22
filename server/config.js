@@ -1,11 +1,15 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { providerPreset, OPENCODE_GO_DEFAULT_MODEL } from './providers/catalog.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(HERE, '..');
-const DATA_DIR = join(ROOT, '.data');
+// Tests point this at a throwaway directory so they can never touch the real
+// config (which holds the user's API key).
+const DATA_DIR = process.env.DEZHOU_DATA_DIR
+  ? resolve(process.env.DEZHOU_DATA_DIR)
+  : join(ROOT, '.data');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 
 export const DEFAULT_CONFIG = {
@@ -114,8 +118,16 @@ export function saveConfig(patch) {
   if (patch.reasoning !== undefined) next.reasoning = Boolean(patch.reasoning);
   if (patch.showAiCards !== undefined) next.showAiCards = Boolean(patch.showAiCards);
 
-  // An explicit empty string clears the stored key; undefined leaves it alone.
-  if (patch.apiKey !== undefined) next.apiKey = String(patch.apiKey).trim();
+  // A blank key means "the user left the field alone", NOT "delete my key".
+  // The browser is never sent the stored key, so the settings form always
+  // renders empty; if blank cleared it, every save would silently wipe it.
+  // Deleting takes a deliberate clearApiKey flag.
+  if (patch.clearApiKey === true) {
+    next.apiKey = '';
+  } else if (patch.apiKey !== undefined) {
+    const typed = String(patch.apiKey).trim();
+    if (typed) next.apiKey = typed;
+  }
 
   if (patch.table && typeof patch.table === 'object') {
     const t = { ...next.table, ...patch.table };
