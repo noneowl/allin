@@ -1,0 +1,118 @@
+{
+  "comment": "《allin》原型全部可调数值。改这里即可调平衡，无需动代码。",
+
+  "stacks": { "player": 1000, "boss": 1000 },
+  "blinds": { "small": 5, "big": 10 },
+
+  "read": {
+    "perHand": 2
+  },
+
+  "speech": {
+    "perHand": { "taunt": 1, "challenge": 1, "pressure": 1 },
+    "buffDecisions": 2
+  },
+
+  "personality": {
+    "id": "deceiver",
+    "name": "千面",
+    "avatar": "🎭",
+    "tagline": "欺骗型。靠语言和下注制造假象，最怕被看穿。",
+    "normalBetSize": 0.7,
+    "bluffFrequency": 0.2,
+    "raiseFrequency": 0.35,
+    "callThreshold": 0.5,
+    "foldThreshold": 0.3,
+    "aggression": 0.55
+  },
+
+  "mentalModifiers": {
+    "CALM": {
+      "bluff": 0.0, "raiseFreq": 0.0, "betSize": 0.0, "aggression": 0.0,
+      "foldThreshold": 0.0, "callThreshold": 0.0, "risk": 0.0, "variance": 0.15,
+      "trapChance": 0.12, "lineBias": 0.18, "readClarity": 0
+    },
+    "SHAKEN": {
+      "bluff": 0.1, "raiseFreq": 0.05, "betSize": 0.1, "aggression": 0.1,
+      "foldThreshold": -0.03, "callThreshold": -0.04, "risk": 0.05, "variance": 0.25,
+      "trapChance": 0.08, "lineBias": 0.3, "readClarity": 0
+    },
+    "TILT": {
+      "bluff": 0.25, "raiseFreq": 0.2, "betSize": 0.3, "aggression": 0.3,
+      "foldThreshold": -0.08, "callThreshold": -0.08, "risk": 0.25, "variance": 0.4,
+      "trapChance": 0.05, "lineBias": 0.4, "readClarity": 1
+    },
+    "BREAKING": {
+      "bluff": 0.2, "raiseFreq": 0.25, "betSize": 0.35, "aggression": 0.35,
+      "foldThreshold": -0.05, "callThreshold": -0.1, "risk": 0.3, "variance": 0.75,
+      "trapChance": 0.05, "lineBias": 0.55, "readClarity": 2
+    }
+  },
+
+  "breakingModes": {
+    "hyperAggressive": { "weight": 0.45, "aggression": 0.4, "bluff": 0.15, "betSize": 0.3 },
+    "hyperTight": { "weight": 0.4, "aggression": -0.35, "bluff": -0.1, "foldThreshold": 0.2, "betSize": -0.2 },
+    "erratic": { "weight": 0.15, "aggression": 0.0, "bluff": 0.1, "betSize": 0.1 }
+  },
+
+  "sizing": {
+    "valueLine": 0.6,
+    "bluffLine": 0.42,
+    "trapLine": 0.68,
+    "sizeJitter": 0.3,
+    "preflopOpenBb": 2.6,
+    "probeRatio": 0.33,
+    "overbetCeiling": 1.6
+  },
+
+  "contradiction": {
+    "lineBiasBase": "见 mentalModifiers.lineBias：选出与实际注码不符的台词的概率",
+    "sizeLevels": [0.35, 0.55, 0.95, 1.5],
+    "behaviorOverbet": 1.0,
+    "windowBaseMs": 1600,
+    "windowPerCharMs": 30,
+    "graceMs": 900
+  },
+
+  "bigPotLostRatio": 0.25,
+
+  "speechEffects": {
+    "taunt": {
+      "aggression": 0.3, "raiseFreq": 0.25, "bluff": 0.15, "betSize": 0.2, "risk": 0.15,
+      "stateScale": { "CALM": 0.5, "SHAKEN": 1.0, "TILT": 1.6, "BREAKING": 1.3 }
+    },
+    "pressure": {
+      "callWeight": -0.4, "foldWeight": 0.6, "aggression": -0.15,
+      "stateScale": { "CALM": 0.4, "SHAKEN": 1.0, "TILT": 1.2, "BREAKING": 1.5 }
+    },
+    "challenge": {
+      "transitionChance": { "CALM": 0.85, "SHAKEN": 0.7, "TILT": 0.4, "BREAKING": 0.4 }
+    }
+  },
+
+  "transitions": {
+    "BLUFF_CAUGHT": {
+      "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 0.4], "TILT": ["BREAKING", 0.2]
+    },
+    "PLAYER_BLUFF_SUCCESS": {
+      "CALM": ["SHAKEN", 0.55], "SHAKEN": ["TILT", 0.3], "TILT": ["BREAKING", 0.1]
+    },
+    "CONTRADICTION_EXPOSED": {
+      "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 1.0], "TILT": ["BREAKING", 0.55]
+    },
+    "LANGUAGE_WEAKNESS_HIT": {
+      "CALM": ["SHAKEN", 0.85], "SHAKEN": ["TILT", 0.7], "TILT": ["BREAKING", 0.3]
+    },
+    "BIG_POT_LOST": {
+      "SHAKEN": ["TILT", 0.75], "TILT": ["BREAKING", 0.85]
+    },
+    "ALL_IN_LOST": {
+      "CALM": ["SHAKEN", 0.8], "SHAKEN": ["TILT", 1.0], "TILT": ["BREAKING", 1.0]
+    },
+    "CONSECUTIVE_READ_SUCCESS": {
+      "CALM": ["SHAKEN", 0.65], "SHAKEN": ["TILT", 0.55], "TILT": ["BREAKING", 0.35]
+    }
+  },
+
+  "rng": { "seed": null }
+}

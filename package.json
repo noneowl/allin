@@ -1,12 +1,13 @@
 {
   "name": "dezhou",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Web Texas Hold'em with LLM-driven AI opponents (OpenCode Go provider)",
+  "description": "《allin》最小原型：1v1 德州扑克 Boss 战 —— RPG 攻防、心理状态与言语博弈",
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
+    "preview": "node scripts/preview.mjs",
     "test": "node --test test/"
   },
   "engines": {

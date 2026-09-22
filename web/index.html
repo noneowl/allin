@@ -4,91 +4,195 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="color-scheme" content="dark" />
-<title>德州扑克 · LLM 对手</title>
+<title>ALLIN · Boss 战</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%99%A0%3C/text%3E%3C/svg%3E" />
 <link rel="stylesheet" href="/css/tokens.css" />
-<link rel="stylesheet" href="/css/layout.css" />
 <link rel="stylesheet" href="/css/cards.css" />
-<link rel="stylesheet" href="/css/table.css" />
-<link rel="stylesheet" href="/css/hud.css" />
-<link rel="stylesheet" href="/css/dialog.css" />
-<link rel="stylesheet" href="/css/lobby.css" />
+<link rel="stylesheet" href="/css/battle.css" />
 </head>
 <body>
   <div class="app" id="app">
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand__mark">♠</span>
-        <div class="brand__text">
-          <strong>德州扑克</strong>
-          <span>LLM 对手 · OpenCode Go</span>
-        </div>
-      </div>
+    <div class="battle">
+      <div class="stagecol">
 
-      <div class="topbar__stats" id="topbar-stats"></div>
+        <!-- ================================================== Boss 区 -->
+        <section class="zone zone--boss" id="boss-zone">
+          <div class="boss" id="boss" data-state="CALM">
+            <div class="boss__id">
+              <div class="boss__avatar" id="boss-avatar">
+                <span class="boss__face" id="boss-face">😏</span>
+              </div>
+              <div class="boss__mood pill" id="boss-mood">冷静</div>
+            </div>
 
-      <div class="topbar__actions">
-        <button class="btn btn--ghost topbar__sidebar-toggle" id="btn-sidebar" title="实况 / 聊天">
-          <span class="btn__icon">💬</span> 实况
-        </button>
-        <button class="btn btn--ghost" id="btn-invite" title="邀请同网络的朋友入座">邀请</button>
-        <button class="btn btn--ghost" id="btn-new-hand" title="立即开始下一手">下一手</button>
-        <button class="btn btn--ghost" id="btn-restart" title="重新建桌，可改人数和座位">新牌局</button>
-        <button class="btn btn--primary" id="btn-settings">
-          <span class="btn__icon">⚙</span> 设置
-        </button>
-      </div>
-    </header>
+            <div class="boss__info">
+              <div class="boss__title">
+                BOSS
+                <span class="dealer-btn" id="boss-dealer" hidden title="庄家">D</span>
+                <span class="betflag" id="boss-bet" hidden><i>△</i><span class="num">0</span></span>
+              </div>
+              <div class="boss__chips num" id="boss-chips">—</div>
+              <div class="boss__holewrap">
+                <div class="card-row" id="boss-hole"></div>
+                <div class="handname" id="boss-handname" hidden></div>
+              </div>
+              <div class="boss__act pill" id="boss-act" hidden></div>
+            </div>
 
-    <main class="stage">
-      <section class="table-area" id="table-area">
-        <div class="table-stage">
-          <div class="table">
-            <div class="table__rail">
-              <div class="table__felt">
-                <div class="table__watermark">TEXAS HOLD'EM</div>
-                <div class="table__center" id="table-center">
-                  <div class="street" id="street-badge"></div>
-                  <div class="board" id="board"></div>
-                  <div class="pot" id="pot-display"></div>
+            <div class="talkzone">
+              <div class="bubble" id="boss-bubble">
+                <span class="bubble__label">BOSS 台词</span>
+                <span class="bubble__text" id="bubble-text"></span><span class="caret" id="bubble-caret"></span>
+              </div>
+
+              <div class="objection" id="objection" hidden>
+                <div class="objection__ring" id="obj-ring">
+                  <svg viewBox="0 0 48 48" width="48" height="48" aria-hidden="true">
+                    <circle class="ring-bg" cx="24" cy="24" r="20"></circle>
+                    <circle class="ring-fg" id="obj-ring-fg" cx="24" cy="24" r="20"></circle>
+                  </svg>
+                  <span class="objection__ms num" id="obj-ms">0</span>
                 </div>
+                <button class="objection__btn" id="btn-objection" type="button">
+                  异议！<small>OBJECTION</small>
+                </button>
+                <div class="objection__hint">检测到矛盾 · 立即提出异议</div>
+                <div class="objection__line" id="objection-line"></div>
               </div>
             </div>
           </div>
-          <div class="seats" id="seats"></div>
-          <div class="bets" id="bets"></div>
-        </div>
-      </section>
+        </section>
 
-      <aside class="sidebar">
-        <div class="sidebar__section">
-          <div class="sidebar__head">
-            <h2>牌桌实况</h2>
-            <span class="pill" id="model-pill">—</span>
+        <!-- ================================================ 牌桌中心 -->
+        <section class="zone zone--table" id="table-zone">
+          <div class="felt" id="felt">
+            <div class="felt__watermark">TEXAS HOLD'EM · BOSS 战</div>
+            <div class="felt__center">
+              <div class="street" id="street-badge">翻牌前</div>
+              <div class="card-row card-row--board" id="board"></div>
+              <div class="pot" id="pot">
+                <span class="pot__label">底池 POT</span>
+                <span class="pot__value num" id="pot-value">0</span>
+              </div>
+            </div>
           </div>
-          <div class="result-panel" id="result-panel" hidden></div>
-          <div class="feed" id="feed"></div>
-          <div class="chat">
-            <input
-              class="input chat__input"
-              id="chat-input"
-              placeholder="说点什么…（AI 会看到）"
-              maxlength="140"
-              autocomplete="off"
-            />
-            <button class="btn" id="chat-send" type="button">发送</button>
+        </section>
+
+        <!-- ================================================ 玩家区域 -->
+        <section class="zone zone--player" id="player-zone">
+          <div class="player" id="player">
+            <div class="player__holewrap">
+              <div class="card-row" id="player-hole"></div>
+              <div class="handname" id="player-handname" hidden></div>
+            </div>
+            <div class="player__meta">
+              <div class="player__title">
+                你
+                <span class="dealer-btn" id="player-dealer" hidden title="庄家">D</span>
+                <span class="betflag" id="player-bet" hidden><i>△</i><span class="num">0</span></span>
+              </div>
+              <div class="player__chips num" id="player-chips">—</div>
+              <div class="pill player__tocall" id="player-tocall" hidden></div>
+            </div>
           </div>
-        </div>
+        </section>
+
+      </div>
+
+      <!-- ============================================== 右侧信息栏 -->
+      <aside class="side">
+        <section class="pane">
+          <header class="pane__head">
+            <h2>Action History</h2>
+            <span class="pill pill--gold" id="hand-pill">第 — 手</span>
+          </header>
+          <div class="feed" id="history"></div>
+        </section>
+
+        <section class="pane">
+          <header class="pane__head"><h2>NPC Table Talk</h2></header>
+          <div class="feed" id="talk"></div>
+        </section>
+
+        <section class="pane">
+          <header class="pane__head">
+            <h2>READ Result</h2>
+            <span class="pill" id="read-left-pill">本手 —</span>
+          </header>
+          <div class="readbox" id="readbox">
+            <div class="readbox__latest" id="read-latest">尚未进行 READ。</div>
+            <div class="feed feed--reads" id="reads"></div>
+          </div>
+        </section>
+
+        <section class="pane">
+          <header class="pane__head"><h2>Important Events</h2></header>
+          <div class="feed" id="important"></div>
+        </section>
       </aside>
-    </main>
+    </div>
 
-    <footer class="actionbar" id="actionbar"></footer>
+    <!-- ================================================ 行动栏 -->
+    <footer class="actionbar" id="actionbar">
+      <div class="ab__status" id="ab-status">
+        <span class="ab__dot" id="ab-dot"></span>
+        <span class="ab__status-text" id="ab-status-text">连接中…</span>
+      </div>
+
+      <div class="ab__acts" id="ab-acts">
+        <button class="btn btn--lg" id="btn-check" type="button"><span id="check-label">过牌</span> <kbd>C</kbd></button>
+        <button class="btn btn--lg btn--call" id="btn-call" type="button"><span id="call-label">跟注</span> <kbd>C</kbd></button>
+        <button class="btn btn--lg btn--fold" id="btn-fold" type="button">弃牌 <kbd>F</kbd></button>
+        <button class="btn btn--lg btn--danger" id="btn-allin" type="button"><span id="allin-label">全下</span> <kbd>A</kbd></button>
+
+        <div class="raise" id="raise-box">
+          <div class="raise__top">
+            <span class="raise__label" id="raise-label-top">下注至</span>
+            <input class="raise__slider" id="raise-slider" type="range" min="0" max="100" step="10" value="0" />
+            <span class="raise__amt num" id="raise-amt">0</span>
+          </div>
+          <div class="raise__quick">
+            <button class="btn btn--chip" data-frac="0.5" type="button">½ 池</button>
+            <button class="btn btn--chip" data-frac="0.6667" type="button">⅔ 池</button>
+            <button class="btn btn--chip" data-frac="1" type="button">1 池</button>
+            <button class="btn btn--chip" data-frac="max" type="button">顶格</button>
+            <button class="btn btn--primary" id="btn-raise" type="button"><span id="raise-btn-label">下注</span> <kbd>↵</kbd></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ab__mental" id="ab-mental">
+        <div class="ab__mental-title">心理操作</div>
+        <button class="btn mental mental--read" id="btn-read" type="button" title="读取 Boss 的模糊倾向">
+          READ <span class="mental__left num" id="read-left-badge">×2</span>
+        </button>
+        <button class="btn mental" id="btn-taunt" type="button">
+          挑衅 <span class="mental__left num" id="taunt-left">×1</span>
+        </button>
+        <button class="btn mental" id="btn-challenge" type="button">
+          质疑 <span class="mental__left num" id="challenge-left">×1</span>
+        </button>
+        <button class="btn mental" id="btn-pressure" type="button">
+          施压 <span class="mental__left num" id="pressure-left">×1</span>
+        </button>
+      </div>
+    </footer>
   </div>
 
-  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+  <!-- ================================================= 演出与浮层 -->
+  <div class="fx" id="fx-root" aria-hidden="true"></div>
+
+  <div class="end" id="end" hidden>
+    <div class="end__card">
+      <div class="end__heart" id="end-heart"></div>
+      <div class="end__kicker" id="end-kicker">VICTORY</div>
+      <h1 class="end__title" id="end-title">BREAK</h1>
+      <div class="end__sub" id="end-sub"></div>
+      <button class="btn btn--primary btn--lg" id="btn-again" type="button">再来一局</button>
+    </div>
+  </div>
+
   <div class="toasts" id="toasts"></div>
-  <div id="modal-root"></div>
-  <div id="lobby-root"></div>
 
   <script type="module" src="/js/app.js"></script>
 </body>
