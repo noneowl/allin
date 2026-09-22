@@ -98,8 +98,8 @@
 - 矛盾检测只针对真正的攻击动作（bet / raise / allin）——跟注与溜入永远不构成「言行不一」；
 - 心理状态是**六格双向刻度**（`SCALE = FLOW·HOT·CALM·SHAKEN·TILT·BREAKING`）：
   赢钱事件可回血（`BIG_POT_WON`/`ALL_IN_WON`/`WIN_STREAK`），打击事件向下，
-  抓千/言语类事件永不回血；HOT 有输钱护甲、FLOW 对言语免疫且 READ 雾化。
-- 用户可见文案里「异议」已改称「抓千 / 破绽」，但事件类型与字段名保持稳定。
+  看穿/言语类事件永不回血；HOT 有输钱护甲、FLOW 对言语免疫且 READ 雾化。
+- 用户可见文案里「异议」已改称「看穿 / 破绽」，但事件类型与字段名保持稳定。
 
 ## events（按顺序播放的动画队列）
 
@@ -145,7 +145,7 @@
 
 | 触发 | 演出 |
 | --- | --- |
-| `objection_result(success)` | Hitstop → 头像震动 → 屏幕轻震 → 白闪 → 「抓千成功！CAUGHT」弹字 → 音效 |
+| `objection_result(success)` | Hitstop → 头像震动 → 屏幕轻震 → 白闪 → 「看穿了！SEE-THROUGH」弹字 → 音效 |
 | `hand_end(bluffCaught)` | 同上，弹字「READ SUCCESS / 抓到诈唬」 |
 | `mental` | 状态横幅：副标题 = `hint`（新状态的行为后果）；`down` 用打击音+深色，回血用明亮音+绿色横幅；情绪刻度当前格切换 |
 | `contradiction` | **三拍第三拍**：心跳两声、台词气泡与 Boss 注码同时发红脉冲、牌桌压暗进入屏息态；首次出现触发教学定格（localStorage 一次性） |

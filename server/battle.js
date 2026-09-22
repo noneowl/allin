@@ -510,7 +510,7 @@ export class Battle {
   }
 
   /**
-   * 抓千！窗口内点击成功即命中（窗口只在检测到真实矛盾时开启）。
+   * 看穿！窗口内点击成功即命中（窗口只在检测到真实矛盾时开启）。
    */
   object(id) {
     const events = [];
@@ -543,8 +543,8 @@ export class Battle {
       hint: t?.hint ?? null,
     });
     this.#feed('objection', t
-      ? `抓千成功！${MOODS[t.from]} → ${MOODS[t.to]}`
-      : '抓千成功！他嘴硬了一句，但防线松了');
+      ? `看穿了！${MOODS[t.from]} → ${MOODS[t.to]}`
+      : '看穿了！他嘴硬了一句，但防线松了');
     return { view: this.view(), events, ok: true };
   }
 

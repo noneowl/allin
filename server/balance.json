@@ -115,7 +115,7 @@
   },
 
   "transitions": {
-    "comment": "双向转移表：打击向下（含从正轨打断），赢钱向上。抓千/言语类事件永不回血。",
+    "comment": "双向转移表：打击向下（含从正轨打断），赢钱向上。看穿/言语类事件永不回血。",
 
     "BLUFF_CAUGHT": {
       "HOT": ["CALM", 0.75], "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 0.4], "TILT": ["BREAKING", 0.2]

@@ -457,13 +457,13 @@ test('赢钱改变心理状态：连赢计数 + 得意台词', () => {
 
 test('心理事件带行为提示与方向（回血 ▲ / 打击 ▼）', () => {
   const b = new Battle({ rng: makeRng(35) });
-  // 直接走抓千命中路径：SHAKEN → TILT（▼打击）
+  // 直接走看穿命中路径：SHAKEN → TILT（▼打击）
   b.boss.mental.state = 'SHAKEN';
   const c = b.boss.addContradiction({ kind: 'spoken_vs_bet', handNo: b.handNo, detail: {} });
   b.openWindow = { id: c.id, deadline: Date.now() + 5000, line: 'x', windowMs: 2000 };
   const res = b.object(c.id);
   const mental = res.events.find((e) => e.type === 'mental');
-  assert.ok(mental, '抓千命中要有 mental 事件');
+  assert.ok(mental, '看穿命中要有 mental 事件');
   assert.equal(mental.cause, 'CONTRADICTION_EXPOSED');
   assert.ok(typeof mental.hint === 'string' && mental.hint.length > 0, '横幅要带行为后果');
   assert.equal(mental.down, true, '打击方向向下');

@@ -40,7 +40,7 @@ test('转移表结构合法：双向、无自环、概率在 0..1，关键边齐
   assert.deepEqual(T.BIG_POT_WON.HOT, ['FLOW', 0.7], '得意时赢大底池 → 神了');
   // 顺风可被打断
   assert.deepEqual(T.HAND_LOST.FLOW, ['HOT', 1], '输一手神了就掉档');
-  // 抓千/言语类事件永不回血：所有边必须是「向下或打断正轨」
+  // 看穿/言语类事件永不回血：所有边必须是「向下或打断正轨」
   for (const ev of ['CONTRADICTION_EXPOSED', 'LANGUAGE_WEAKNESS_HIT', 'BLUFF_CAUGHT',
     'CONSECUTIVE_READ_SUCCESS', 'PLAYER_BLUFF_SUCCESS']) {
     for (const [from, [to]] of Object.entries(T[ev])) {

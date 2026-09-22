@@ -117,7 +117,7 @@ export const sfx = {
     noise({ dur: 0.03, gain: 0.035, band: 4200 });
   },
 
-  /** 「抓千！」喊声。 */
+  /** 「看穿！」喊声。 */
   objection() {
     tone({ freq: 170, dur: 0.18, type: 'sawtooth', gain: 0.14, sweep: 320 });
     noise({ dur: 0.2, gain: 0.12, band: 1300 });

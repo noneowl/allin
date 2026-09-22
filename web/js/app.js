@@ -407,7 +407,7 @@ function updateMentalHint(view, { readHot = false } = {}) {
   if (S.pendingLean) text = `倾向：${S.pendingLean} —— 你信吗？`;
   else if (view?.player?.canChallenge && !S.objection) text = '他的话有破绽 —— 质疑可以追打';
   else if (readHot) text = '他刚下注 · 此刻 READ 最有价值';
-  else text = '瞄准 READ · 布局言语 · 破绽亮起按抓千';
+  else text = '瞄准 READ · 布局言语 · 破绽亮起按看穿';
   if (D.mentalHint.textContent !== text) D.mentalHint.textContent = text;
   D.mentalHint.classList.toggle('is-question', Boolean(S.pendingLean));
 }
@@ -976,7 +976,7 @@ const EVENT_PLAYERS = {
     setTimeout(() => sfx.heartbeat(), 430);
     const why = CONTRADICTION_LABEL[ev.kind] ?? (ev.kind ? String(ev.kind) : '出现破绽');
     fx.popup(D.bubble, '破绽出现', 'crit');
-    appendCapped(D.important, feedNode({ kind: 'contradiction', text: `${why} · 按下抓千！` }));
+    appendCapped(D.important, feedNode({ kind: 'contradiction', text: `${why} · 按下看穿！` }));
 
     // 首次破绽 = 教学定格（一次性）：不挡住队列，窗口照常紧接着打开
     let coached = false;
@@ -1000,26 +1000,26 @@ const EVENT_PLAYERS = {
       await typeBossLine(line); // 异议窗口 = 打字机结束 + 余下时间（deadline 为准）
     }
     openObjection({ id: ev.id, deadline: ev.deadline, line }, windowMs, { sound: true });
-    fx.popup(D.bubble, '就是现在 — 抓千！', 'crit');
-    appendCapped(D.important, feedNode({ kind: 'objection', text: '破绽亮起：倒计时内按下抓千！' }));
+    fx.popup(D.bubble, '就是现在 — 看穿！', 'crit');
+    appendCapped(D.important, feedNode({ kind: 'objection', text: '破绽亮起：倒计时内按下看穿！' }));
     await fx.sleep(260);
   },
 
   async objection_result(ev) {
     clearObjection();
     if (ev.success) {
-      await fx.impact({ title: '抓千成功！', sub: 'CAUGHT', tone: 'red', sfxName: 'objection' });
+      await fx.impact({ title: '看穿了！', sub: 'SEE-THROUGH', tone: 'red', sfxName: 'objection' });
       const tr = ev.transition;
       if (tr && tr.to) await showMental(tr.from, tr.to, 'OBJECTION', ev.hint ?? null);
       appendCapped(D.important, feedNode({
         kind: 'objection',
-        text: tr ? '抓千成功！心理防线崩了一格' : '抓千成功！他嘴硬了一句，但防线松了',
+        text: tr ? '看穿了！心理防线崩了一格' : '看穿了！他嘴硬了一句，但防线松了',
       }));
     } else {
       sfx.miss();
       fx.popup(D.bubble, '没抓住', 'miss');
       fx.screenShake(300, 5);
-      appendCapped(D.important, feedNode({ kind: 'objection', text: '抓千失败：窗口已经过去' }));
+      appendCapped(D.important, feedNode({ kind: 'objection', text: '看穿失败：窗口已经过去' }));
       await fx.sleep(560);
     }
   },
