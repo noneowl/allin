@@ -343,7 +343,20 @@
 .zone--table {
   padding: 4px 20px;
   display: flex;
+  flex-direction: column;
+  gap: 6px;
   min-height: 0;
+}
+
+/* 牌桌上方的 HUD 条带：情绪刻度 + 打法说明（不占用桌内空间） */
+.table-strip {
+  flex: 0 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding-top: 2px;
 }
 
 .felt {
@@ -956,12 +969,21 @@ kbd {
 
 /* 心理操作 */
 .ab__mental {
+  position: relative;
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  padding-left: 14px;
+  border-left: 1px dashed var(--line-strong);
+}
+
+.ab__mental-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-left: 14px;
-  border-left: 1px dashed var(--line-strong);
 }
 
 .ab__mental-title {
@@ -1513,7 +1535,9 @@ body.hitstop *::after {
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-wrap: wrap;
   gap: 8px;
+  max-width: 100%;
 }
 
 .state-scale__label {
@@ -1584,8 +1608,7 @@ body.hitstop *::after {
 }
 
 .state-hint {
-  max-width: 560px;
-  margin: 0 auto;
+  max-width: min(640px, 100%);
   font-size: 11px;
   line-height: 1.4;
   color: var(--text-2);
@@ -1638,18 +1661,14 @@ body.hitstop *::after {
 }
 
 /* ================================================ 心理操作情境提示 */
-.ab__mental-col {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 0 0 auto;
-}
-
 .mental-hint {
-  max-width: 210px;
+  max-width: 100%;
   font-size: 11px;
-  line-height: 1.35;
+  line-height: 1.3;
   color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: color 0.2s var(--ease);
 }
 
@@ -1687,7 +1706,7 @@ body.hitstop *::after {
 /* READ 倾向标签 */
 .readbox__lean {
   display: none;
-  margin-top: 6px;
+  margin: 4px 8px 2px;
   padding: 5px 10px;
   border-radius: 8px;
   border: 1px solid rgba(232, 200, 106, 0.45);

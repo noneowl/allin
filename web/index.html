@@ -66,22 +66,24 @@
 
         <!-- ================================================ 牌桌中心 -->
         <section class="zone zone--table" id="table-zone">
+          <div class="table-strip" id="state-scale">
+            <div class="state-scale">
+              <span class="state-scale__label">情绪刻度</span>
+              <div class="state-scale__steps" id="state-scale-steps">
+                <span class="state-scale__step" data-state="FLOW">✨ 神了</span>
+                <span class="state-scale__step" data-state="HOT">🤑 得意</span>
+                <span class="state-scale__step" data-state="CALM">😏 冷静</span>
+                <span class="state-scale__step" data-state="SHAKEN">😳 动摇</span>
+                <span class="state-scale__step" data-state="TILT">😡 上头</span>
+                <span class="state-scale__step" data-state="BREAKING">🤯 崩坏</span>
+              </div>
+            </div>
+            <div class="state-hint" id="state-hint" title="">—</div>
+          </div>
           <div class="felt" id="felt">
             <div class="felt__watermark">TEXAS HOLD'EM · BOSS 战</div>
             <div class="felt__center">
               <div class="street" id="street-badge">翻牌前</div>
-              <div class="state-scale" id="state-scale">
-                <span class="state-scale__label">情绪刻度</span>
-                <div class="state-scale__steps" id="state-scale-steps">
-                  <span class="state-scale__step" data-state="FLOW">✨ 神了</span>
-                  <span class="state-scale__step" data-state="HOT">🤑 得意</span>
-                  <span class="state-scale__step" data-state="CALM">😏 冷静</span>
-                  <span class="state-scale__step" data-state="SHAKEN">😳 动摇</span>
-                  <span class="state-scale__step" data-state="TILT">😡 上头</span>
-                  <span class="state-scale__step" data-state="BREAKING">🤯 崩坏</span>
-                </div>
-              </div>
-              <div class="state-hint" id="state-hint" title="">—</div>
               <div class="card-row card-row--board" id="board"></div>
               <div class="pot" id="pot">
                 <span class="pot__label">底池 POT</span>
@@ -177,22 +179,22 @@
       </div>
 
       <div class="ab__mental" id="ab-mental">
-        <div class="ab__mental-col">
+        <div class="ab__mental-row">
           <div class="ab__mental-title">心理操作</div>
-          <div class="mental-hint" id="mental-hint">瞄准 · 布局 · 看准破绽再出手</div>
+          <button class="btn mental mental--read" id="btn-read" type="button" title="读取 Boss 的模糊倾向与期望方向">
+            READ <span class="mental__left num" id="read-left-badge">×2</span>
+          </button>
+          <button class="btn mental" id="btn-taunt" type="button" title="让他更凶、更大注">
+            挑衅 <span class="mental__left num" id="taunt-left">×1</span>
+          </button>
+          <button class="btn mental mental--challenge" id="btn-challenge" type="button" title="追打已经暴露的破绽">
+            质疑 <span class="mental__left num" id="challenge-left">×1</span>
+          </button>
+          <button class="btn mental" id="btn-pressure" type="button" title="让他更想退缩，掩护你的诈唬">
+            施压 <span class="mental__left num" id="pressure-left">×1</span>
+          </button>
         </div>
-        <button class="btn mental mental--read" id="btn-read" type="button" title="读取 Boss 的模糊倾向与期望方向">
-          READ <span class="mental__left num" id="read-left-badge">×2</span>
-        </button>
-        <button class="btn mental" id="btn-taunt" type="button" title="让他更凶、更大注">
-          挑衅 <span class="mental__left num" id="taunt-left">×1</span>
-        </button>
-        <button class="btn mental mental--challenge" id="btn-challenge" type="button" title="追打已经暴露的破绽">
-          质疑 <span class="mental__left num" id="challenge-left">×1</span>
-        </button>
-        <button class="btn mental" id="btn-pressure" type="button" title="让他更想退缩，掩护你的诈唬">
-          施压 <span class="mental__left num" id="pressure-left">×1</span>
-        </button>
+        <div class="mental-hint" id="mental-hint">瞄准 · 布局 · 看准破绽再出手</div>
       </div>
     </footer>
   </div>
