@@ -84,6 +84,12 @@ const S = {
   raiseTouched: false,    // 用户是否动过滑杆
   raiseValue: 0,
 
+  guideOpen: false,       // 新手引导浮层
+  guideIndex: 0,
+  guideClosedOnce: false, // 关闭过一次后才开始发上下文小提示
+  usedRead: false,        // 本局已用过 READ（首手提示的触发条件）
+  hintReadDone: false,
+
   polls: 0,               // 静默刷新次数（有界，防止无限轮询）
   pollTimer: null,
 };
@@ -105,6 +111,8 @@ const D = {
   btnRead: null, readBadge: null, btnTaunt: null, tauntLeft: null,
   btnChallenge: null, challengeLeft: null, btnPressure: null, pressureLeft: null,
   end: null, endCard: null, endHeart: null, endKicker: null, endTitle: null, endSub: null, btnAgain: null,
+  guide: null, guideStep: null, guidePages: null, guideDots: null,
+  guidePrev: null, guideSkip: null, guideNext: null, btnGuide: null,
 };
 
 let boardRow = null;
@@ -222,6 +230,7 @@ function render(view) {
   renderObjectionFromView(view);
   renderActionbar(view);
   renderPhase(view);
+  maybeContextHints();
 }
 
 function handOf(seat) {
@@ -1032,6 +1041,94 @@ function hideEnd() {
   D.endHeart.textContent = '';
 }
 
+/* ============================================== 上下文提示 & 新手引导 */
+
+/** 引导看过之后、首手还没动过时，给一次「先 READ」的轻提示（每局最多一次）。 */
+function maybeContextHints() {
+  if (!S.guideClosedOnce || S.guideOpen || S.hintReadDone) return;
+  const v = S.view;
+  if (!v || v.phase !== 'playing' || isBusy() || v.toAct !== 0) return;
+  if (S.usedRead) {
+    S.hintReadDone = true;
+    return;
+  }
+  if (v.handNo <= 1 && (v.player?.readsLeft ?? 0) > 0) {
+    S.hintReadDone = true;
+    setTimeout(() => {
+      if (!S.guideOpen) fx.toast('提示：先用 READ 看他一眼，再决定跟还是弃', 'info');
+    }, 700);
+  }
+}
+
+/* ============================================================ 新手引导 */
+
+const GUIDE_KEY = 'allin.guide.v1';
+
+function guideSeen() {
+  try {
+    return localStorage.getItem(GUIDE_KEY) === '1';
+  } catch {
+    return false; // 隐私模式拿不到 localStorage：当作没看过，每次都能重看也无妨
+  }
+}
+
+function markGuideSeen() {
+  try {
+    localStorage.setItem(GUIDE_KEY, '1');
+  } catch {
+    /* 忽略 */
+  }
+}
+
+function openGuide(page = 0) {
+  if (!D.guide) return;
+  S.guideOpen = true;
+  S.guideIndex = clamp(Number(page) || 0, 0, Math.max(0, D.guidePages.length - 1));
+  D.guide.hidden = false;
+  renderGuide();
+  sfx.notify();
+}
+
+function closeGuide() {
+  if (!S.guideOpen || !D.guide) return;
+  S.guideOpen = false;
+  D.guide.hidden = true;
+  S.guideClosedOnce = true;
+  markGuideSeen();
+}
+
+function renderGuide() {
+  const pages = D.guidePages ?? [];
+  const i = clamp(S.guideIndex, 0, Math.max(0, pages.length - 1));
+  S.guideIndex = i;
+  pages.forEach((p, idx) => p.classList.toggle('is-on', idx === i));
+  Array.from(D.guideDots?.children ?? []).forEach((d, idx) => d.classList.toggle('is-on', idx === i));
+  D.guideStep.textContent = `${i + 1} / ${pages.length}`;
+  D.guidePrev.disabled = i === 0;
+  D.guideNext.textContent = i === pages.length - 1 ? '开始战斗' : '下一步';
+}
+
+function onGuideNext() {
+  if (S.guideIndex >= (D.guidePages?.length ?? 1) - 1) closeGuide();
+  else {
+    S.guideIndex += 1;
+    renderGuide();
+  }
+}
+
+function buildGuide() {
+  D.guidePages = Array.from(document.querySelectorAll('#guide .guide__page'));
+  clear(D.guideDots);
+  D.guidePages.forEach((_, i) => {
+    const dot = el('button', { class: 'guide__dot', type: 'button', 'aria-label': `第 ${i + 1} 页` });
+    dot.addEventListener('click', () => {
+      S.guideIndex = i;
+      renderGuide();
+    });
+    D.guideDots.appendChild(dot);
+  });
+}
+
 /* ============================================================ 静默刷新 */
 
 function schedulePoll() {
@@ -1111,6 +1208,7 @@ function bindActions() {
   D.btnRead.addEventListener('click', async () => {
     unlockAudio();
     S.polls = 0;
+    S.usedRead = true;
     await request(() => api.read());
   });
 
@@ -1130,10 +1228,29 @@ function bindActions() {
     S.polls = 0;
     await request(() => api.newgame());
   });
+
+  // 新手引导
+  D.btnGuide.addEventListener('click', () => openGuide(S.guideIndex));
+  D.guidePrev.addEventListener('click', () => {
+    if (S.guideIndex > 0) {
+      S.guideIndex -= 1;
+      renderGuide();
+    }
+  });
+  D.guideNext.addEventListener('click', onGuideNext);
+  D.guideSkip.addEventListener('click', closeGuide);
+  D.guide.addEventListener('click', (e) => {
+    if (e.target === D.guide) closeGuide(); // 点遮罩关闭
+  });
 }
 
 function bindKeyboard() {
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && S.guideOpen) {
+      closeGuide();
+      return;
+    }
+    if (S.guideOpen) return; // 引导打开时屏蔽快捷键，避免误操作
     if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
@@ -1236,6 +1353,15 @@ function bindDom() {
   bossRow = new CardRow(D.bossHole, { stagger: 90 });
 
   D.endCard.classList.add('is-pre');
+
+  D.guide = $('#guide');
+  D.guideStep = $('#guide-step');
+  D.guideDots = $('#guide-dots');
+  D.guidePrev = $('#guide-prev');
+  D.guideSkip = $('#guide-skip');
+  D.guideNext = $('#guide-next');
+  D.btnGuide = $('#btn-guide');
+  buildGuide();
 }
 
 async function boot(retries = 4) {
@@ -1269,6 +1395,10 @@ function init() {
     document.removeEventListener('pointerdown', unlock);
   };
   document.addEventListener('pointerdown', unlock);
+
+  // 没看过引导 → 开局自动弹出；看过 → 左下角 ? 随时重看
+  if (guideSeen()) S.guideClosedOnce = true;
+  else openGuide(0);
 
   boot();
 }

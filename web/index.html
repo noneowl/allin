@@ -137,6 +137,7 @@
       <div class="ab__status" id="ab-status">
         <span class="ab__dot" id="ab-dot"></span>
         <span class="ab__status-text" id="ab-status-text">连接中…</span>
+        <button class="ab__help" id="btn-guide" type="button" title="玩法说明（新手引导）">?</button>
       </div>
 
       <div class="ab__acts" id="ab-acts">
@@ -193,6 +194,87 @@
   </div>
 
   <div class="toasts" id="toasts"></div>
+
+  <!-- ==================================================== 新手引导 -->
+  <div class="guide" id="guide" hidden>
+    <div class="guide__card" role="dialog" aria-modal="true" aria-label="新手引导">
+      <div class="guide__head">
+        <span class="guide__brand">♠ ALLIN · 新手引导</span>
+        <span class="guide__step num" id="guide-step">1 / 5</span>
+      </div>
+
+      <div class="guide__body" id="guide-body">
+        <section class="guide__page">
+          <h3>把他的筹码打到 0，就是击败他</h3>
+          <ul>
+            <li>双方各 <strong>1000 筹码</strong>：筹码 = 下注资源 = <span class="hi">生命值</span> = 战斗进度</li>
+            <li>他的筹码归零 → <span class="hi">BREAK</span>，战斗胜利；你的归零 → 战斗失败</li>
+            <li>没有技能栏 —— <strong>所有攻防都通过扑克动作完成</strong>，牌桌本身就是整场战斗</li>
+          </ul>
+          <div class="guide__loop">读他 → 影响他 → 让他失控 → 他在牌桌上犯错 → 你赢走筹码</div>
+        </section>
+
+        <section class="guide__page">
+          <h3>扑克动作 = 战斗动作</h3>
+          <table class="guide__map">
+            <tr><td>下注 / 加注</td><td>攻击、施压 —— 让他做决定</td></tr>
+            <tr><td>跟注</td><td>防御、接招 —— 抓住他的诈唬就是一次反击</td></tr>
+            <tr><td>过牌</td><td>示弱、诱敌 —— 等他露出破绽再动手</td></tr>
+            <tr><td>弃牌</td><td>撤退、止损 —— 输小的不算输</td></tr>
+            <tr><td>全下</td><td>必杀 —— 高风险决战，筹码即生命</td></tr>
+          </table>
+          <p>他也在用同样的动作打你。拿到好牌只是一半，<strong>看穿他出什么牌才是另一半</strong>。</p>
+        </section>
+
+        <section class="guide__page">
+          <h3>三个心理操作（每手限次）</h3>
+          <ul>
+            <li><span class="hi">READ ×2</span>：一条模糊的心理提示 —— 是情绪和倾向，<strong>不是答案</strong>。
+              「他似乎非常期待你弃牌」→ 自己判断他是在演还是真的有货</li>
+            <li><span class="hi">挑衅 ×1</span>：让他更凶、注更大、更爱演 —— 然后准备好大注抓他</li>
+            <li><span class="hi">质疑 ×1</span>：攻击他的言行矛盾，命中直接动摇他的心理</li>
+            <li><span class="hi">施压 ×1</span>：让他更想退缩 —— 掩护你自己的诈唬</li>
+          </ul>
+          <p>言语不会直接偷走他的筹码：<strong>它先改变他的心态，再通过他的下注把错误付给你</strong>。</p>
+        </section>
+
+        <section class="guide__page">
+          <h3>异议窗口：看见破绽就按</h3>
+          <ul>
+            <li>他说的话和下的注<span class="hi">对不上</span>（放狠话却下小注）、或打法
+              <span class="hi">前后矛盾</span>（一路示弱突然超池全推）时，台词播放期间会出现红色
+              <strong>「异议！」</strong>按钮</li>
+            <li>倒计时内点击 → 打击演出 + <strong>他的心理状态恶化一档</strong></li>
+            <li>窗口<span class="hi">只在真矛盾时出现</span> —— 假窗口根本不存在，看到就按</li>
+            <li>错过了也别急：本手内还可以用 <strong>质疑</strong> 追打这条矛盾</li>
+          </ul>
+        </section>
+
+        <section class="guide__page">
+          <h3>他在崩坏，就是你在赢</h3>
+          <ul>
+            <li>心理状态单向恶化：<span class="hi">冷静 😏 → 动摇 😳 → 上头 😡 → 崩坏 🤯</span></li>
+            <li>越被动越明显：台词变嘴硬、诈唬变多、注码变大、弃牌阈值下降 ——
+              头像表情、配色、状态标签都会告诉你</li>
+            <li>崩坏后他甚至会<span class="hi">自相矛盾地失控</span>，READ 也变得清晰 ——
+              越到后面越好读</li>
+          </ul>
+          <p>键盘：<strong>F</strong> 弃牌 · <strong>C</strong> 过牌/跟注 · <strong>A</strong> 全下 ·
+            <strong>↵</strong> 提交加注 · 左下角 <strong>?</strong> 随时重看本引导。</p>
+          <div class="guide__loop">先打几手，观察他的基线 → READ 验证你的猜想 → 抓一次诈唬 → 激怒他 → 收割</div>
+        </section>
+      </div>
+
+      <div class="guide__foot">
+        <div class="guide__dots" id="guide-dots"></div>
+        <div class="guide__btns">
+          <button class="btn" id="guide-prev" type="button">上一步</button>
+          <button class="btn" id="guide-skip" type="button">跳过</button>
+          <button class="btn btn--primary" id="guide-next" type="button">下一步</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="/js/app.js"></script>
 </body>
