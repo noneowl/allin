@@ -73,7 +73,7 @@ export const TALK = {
     any: [L('……过。'), L('你到底跟不跟？'), L('哼。')],
   },
 
-  TILT: {
+  EXPOSED: {
     VALUE: [
       L('你不是很会看吗？继续。'),
       L('这次我让你看个够。'),
@@ -108,7 +108,7 @@ export const TALK = {
 export const WIN_QUIP = {
   CALM: [L('收了。'), L('这手该我赢。')],
   SHAKEN: [L('总算赢一把。'), L('……我就说没问题。')],
-  TILT: [L('早该如此！'), L('看清楚，这才是我。')],
+  EXPOSED: [L('早该如此！'), L('看清楚，这才是我。')],
 };
 
 /** 抽一句赢牌台词；返回 null 表示沉默。 */

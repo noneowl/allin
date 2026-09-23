@@ -94,7 +94,7 @@ export const DISTORTION_POOL = {
     '这注足够吓他了。',
     '他不敢动了。',
   ],
-  TILT: [
+  EXPOSED: [
     '他每一手都在虚张声势。',
     '我今天的读牌准得可怕。',
     '他绝对接不住。',
@@ -203,7 +203,7 @@ export function makeFragment(ctx) {
     };
   }
   const pool = TRUE_FAMILIES[family];
-  const base = 0.55 + rng() * 0.3 + (state === 'TILT' ? 0.1 : 0);
+  const base = 0.55 + rng() * 0.3 + (state === 'EXPOSED' ? 0.1 : 0);
   return {
     text: pool[Math.floor(rng() * pool.length)],
     type: 'TRUE',

@@ -4,7 +4,7 @@
  *   Layer 1  Poker Evaluation   理性评估：equity / 牌面 / 底池赔率 / Pot / Effective Stack /
  *                              Position / Street / 玩家历史 → 中性权重 + 机会标记
  *   Layer 2  Personality        DECEIVER 偏移 + Player Model 适应（估计弃率、针对性）
- *   Layer 3  Current Emotion    CALM/SHAKEN/TILT 修正 + 决策方差（COUNTER 等高压增益也从这进）
+ *   Layer 3  Current Emotion    CALM/SHAKEN/EXPOSED 修正 + 决策方差（COUNTER 等高压增益也从这进）
  *   Finalize                    采样 + 定尺度 + 产出 { action, amount, intent }
  *
  * intent ∈ VALUE | BLUFF | PROBE | TRAP | CONTROL —— 内部剧本信息，绝不下发。
@@ -125,7 +125,7 @@ export function applyPersonality(ev, personality, model, facingFrac = 0) {
 // ============================================================ Layer 3
 
 /**
- * 情绪修正：CALM/SHAKEN/TILT 的差值；COUNTER 等高压增益已由上层并入 mods。
+ * 情绪修正：CALM/SHAKEN/EXPOSED 的差值；COUNTER 等高压增益已由上层并入 mods。
  */
 export function applyEmotion(ev, mods) {
   if (!mods) return ev;
@@ -213,7 +213,7 @@ export function decide(ctx) {
       return { action: 'fold', intent: 'CONTROL', equity: eq };
     }
 
-    // 方差搅动（TILT/COUNTER 的失控感）
+    // 方差搅动（EXPOSED 的失控感）
     if (rng() < p.variance * 0.4) {
       w.fold += 0.5;
       w.call += 0.5;

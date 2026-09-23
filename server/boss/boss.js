@@ -89,7 +89,7 @@ export class Boss {
       || action === 'pressure' || action === 'heavy';
     if (!isAggressive) {
       if (action === 'fold') return null;
-      const talkative = { CALM: 0.18, SHAKEN: 0.3, TILT: 0.42 }[this.state] ?? 0.2;
+      const talkative = { CALM: 0.18, SHAKEN: 0.3, EXPOSED: 0.42 }[this.state] ?? 0.2;
       if (this.rng() > talkative) return null;
     }
     const intent = this.lastActionInfo?.intent ?? null;

@@ -22,23 +22,30 @@ const balance = loadBalance();
 
 // ============================================================ 情绪（v3 三状态）
 
-test('情绪转移表结构合法：三状态、单向恶化、无自环、关键边齐全', () => {
-  assert.deepEqual(STATES, ['CALM', 'SHAKEN', 'TILT']);
+test('情绪转移表结构合法：三态、只被 CRACK 推进、无自环', () => {
+  assert.deepEqual(STATES, ['CALM', 'SHAKEN', 'EXPOSED']);
   for (const [event, row] of Object.entries(balance.transitions)) {
     if (event === 'comment') continue;
     assert.ok(event in EVENT_NAMES, `${event} 要有中文名`);
     for (const [from, [to, chance]] of Object.entries(row)) {
       assert.ok(STATES.includes(from), `${event} 起点 ${from} 合法`);
       assert.ok(STATES.includes(to), `${event} 终点 ${to} 合法`);
-      assert.ok(ORDER[to] > ORDER[from], `${event}: ${from} → ${to} 必须单向恶化`);
+      assert.notEqual(to, from, `${event}: 不允许自环`);
       assert.ok(chance >= 0 && chance <= 1, `${event}/${from} 概率 0..1`);
     }
   }
+  // §6：连续 CRACK 必达（CALM→SHAKEN→EXPOSED），只有 CRACK 一张驱动表
   const T = balance.transitions;
-  assert.deepEqual(T.BLUFF_CAUGHT.CALM, ['SHAKEN', 1]);
-  assert.deepEqual(T.GOTCHA_HIT.CALM, ['SHAKEN', 1], 'GOTCHA 命中必推动摇');
-  assert.deepEqual(T.GOTCHA_STREAK.SHAKEN, ['TILT', 1], '连续正确 GOTCHA 必上头');
-  assert.deepEqual(T.ALL_IN_LOST.SHAKEN, ['TILT', 1]);
+  assert.deepEqual(T.CRACK.CALM, ['SHAKEN', 1]);
+  assert.deepEqual(T.CRACK.SHAKEN, ['EXPOSED', 1]);
+  assert.deepEqual(Object.keys(T).filter((k) => k !== 'comment'), ['CRACK'], '心理只被 CRACK 推进（§6/§8）');
+  // 所有边都是向右推进（无回血、无旁支）—— 跳过 comment 字符串值
+  for (const row of Object.values(T)) {
+    if (typeof row !== 'object') continue;
+    for (const [from, [to]] of Object.entries(row)) {
+      assert.ok(isDownEvent(from, to), `${from} → ${to} 必须向右`);
+    }
+  }
 });
 
 test('Emotion：概率 1 必发、0 必不发、终态无边则不动', () => {
@@ -51,9 +58,10 @@ test('Emotion：概率 1 必发、0 必不发、终态无边则不动', () => {
 
   // TILT 是终点：任何打击在 TILT 都无边可走
   const atTilt = new Emotion({ transitions: balance.transitions, rng: () => 0 });
-  atTilt.state = 'TILT';
-  assert.equal(atTilt.attempt('BLUFF_CAUGHT'), null);
-  assert.equal(atTilt.state, 'TILT');
+  atTilt.state = 'EXPOSED';
+  assert.equal(atTilt.attempt('CRACK'), null, 'EXPOSED 是终点，无边可走');
+  assert.equal(atTilt.attempt('BLUFF_CAUGHT'), null, '筹码类事件不再推动心理（§8）');
+  assert.equal(atTilt.state, 'EXPOSED');
 });
 
 test('三状态的表情/标签/方向判断', () => {
@@ -74,7 +82,7 @@ function fragCtx(over = {}) {
   };
 }
 
-test('碎片按情绪取比例：CALM 噪音多，TILT 真话与错觉密集', () => {
+test('碎片按情绪取比例：CALM 噪音多，EXPOSED 真话与错觉密集', () => {
   const count = (state, n = 400) => {
     const c = { TRUE: 0, NOISE: 0, DISTORTION: 0 };
     const r = seededRng(7);
@@ -85,10 +93,10 @@ test('碎片按情绪取比例：CALM 噪音多，TILT 真话与错觉密集', (
     return c;
   };
   const calm = count('CALM');
-  const tilt = count('TILT');
+  const tilt = count('EXPOSED');
   assert.ok(calm.NOISE > calm.TRUE, `CALM 噪音应多于真话（${calm.NOISE} vs ${calm.TRUE}）`);
-  assert.ok(tilt.TRUE > calm.TRUE * 1.5, `TILT 真话应显著多于 CALM（${tilt.TRUE} vs ${calm.TRUE}）`);
-  assert.ok(tilt.TRUE + tilt.DISTORTION > (calm.TRUE + calm.DISTORTION) * 1.3, 'TILT 信息更密集');
+  assert.ok(tilt.TRUE > calm.TRUE * 1.5, `EXPOSED 真话应显著多于 CALM（${tilt.TRUE} vs ${calm.TRUE}）`);
+  assert.ok(tilt.TRUE + tilt.DISTORTION > (calm.TRUE + calm.DISTORTION) * 1.3, 'EXPOSED 信息更密集');
 });
 
 test('只有 TRUE 带标签；类型与标签绝不为 NOISE/DISTORTION 所带', () => {
@@ -142,7 +150,7 @@ test('trueRate 覆盖与 fear_raise 家族（GOTCHA 泄漏与 §五规则所需�
     if (f.type === 'TRUE' && f.tags[0] === 'fear_raise') saw = true;
   }
   assert.ok(saw, 'BLUFF 家族池含 fear_raise');
-  assert.equal(flashMs('TILT', balance), balance.read.flashMs.TILT);
+  assert.equal(flashMs('EXPOSED', balance), balance.read.flashMs.EXPOSED);
   assert.ok(NOISE_POOL.length > 0 && Object.keys(DISTORTION_POOL).length === 3);
 });
 
@@ -233,7 +241,7 @@ test('Layer2 人格：DECEIVER 压低弃牌、抬高加注、开启诈唬权重 
   assert.ok(ev2.w.fold <= base * 0.5, '适应后面对高压几乎不弃');
 });
 
-test('Layer3 情绪：TILT 比 CALM 更凶、更敢接、方差更大', () => {
+test('Layer3 情绪：EXPOSED 比 CALM 更凶、更敢接、方差更大', () => {
   const mk = (state) => {
     const ev = evaluateWeights({ equity: 0.45, potBefore: 100, toCall: 50, sizing: balance.sizing });
     applyPersonality(ev, balance.personality, null, 0.5);
@@ -241,15 +249,15 @@ test('Layer3 情绪：TILT 比 CALM 更凶、更敢接、方差更大', () => {
     return ev;
   };
   const calm = mk('CALM');
-  const tilt = mk('TILT');
-  assert.ok(tilt.w.fold < calm.w.fold, 'TILT 更少弃');
-  assert.ok(tilt.w.call > calm.w.call, 'TILT 更敢接');
-  assert.ok(tilt.w.raiseValue > calm.w.raiseValue, 'TILT 更敢加');
-  assert.ok(tilt.p.variance > calm.p.variance, 'TILT 方差更大');
-  assert.ok(tilt.p.bluffFrequency > calm.p.bluffFrequency, 'TILT 诈唬更多');
+  const tilt = mk('EXPOSED');
+  assert.ok(tilt.w.fold < calm.w.fold, 'EXPOSED 更少弃');
+  assert.ok(tilt.w.call > calm.w.call, 'EXPOSED 更敢接');
+  assert.ok(tilt.w.raiseValue > calm.w.raiseValue, 'EXPOSED 更敢加');
+  assert.ok(tilt.p.variance > calm.p.variance, 'EXPOSED 方差更大');
+  assert.ok(tilt.p.bluffFrequency > calm.p.bluffFrequency, 'EXPOSED 诈唬更多');
 });
 
-test('采样统计：TILT 比 CALM 更爱开火，注也更大', () => {
+test('采样统计：EXPOSED 比 CALM 更爱开火，注也更大', () => {
   const sample = (state, n = 300, equity = 0.3) => {
     const rng = rngOf(31);
     let bets = 0; let sizeSum = 0; let raises = 0;
@@ -261,7 +269,7 @@ test('采样统计：TILT 比 CALM 更爱开火，注也更大', () => {
     return { betRate: bets / n, avgSize: sizeSum / Math.max(1, bets), raiseRate: raises / n };
   };
   const calm = sample('CALM');
-  const tilt = sample('TILT');
+  const tilt = sample('EXPOSED');
   assert.ok(tilt.betRate > calm.betRate + 0.1, `TILT 开火应更频繁：CALM=${calm.betRate.toFixed(2)} TILT=${tilt.betRate.toFixed(2)}`);
   assert.ok(tilt.avgSize > calm.avgSize * 1.1, `TILT 注应更大：CALM=${calm.avgSize.toFixed(0)} TILT=${tilt.avgSize.toFixed(0)}`);
 });

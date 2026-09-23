@@ -19,7 +19,7 @@ export class PlayerModel {
       decisions: 0,
       folds: 0, calls: 0, checks: 0, pressure: 0, heavy: 0, allins: 0, betraises: 0,
       // 面对 Boss 下注时的反应（评估诈唬收益用）
-      facedBet: 0, foldsToFaced: 0, callsFaced: 0, raisesFaced: 0,
+      facedBet: 0, foldsToFaced: 0, callsFaced: 0, raisesFaced: 0, foldsToHeavy: 0,
       // 习惯与针对性
       reads: 0, readThenHeavy: 0, readWindow: false,
       pressureThenHeavy: 0, pressureWindow: false,
@@ -57,8 +57,11 @@ export class PlayerModel {
         // 面对下注的弃/跟
         if (meta.facingBet) {
           s.facedBet += 1;
-          if (a === 'fold') s.foldsToFaced += 1;
-          else if (a === 'call') s.callsFaced += 1;
+          if (a === 'fold') {
+            s.foldsToFaced += 1;
+            // v5 §9 反读模式：面对重注家族（≥heavyFrac 或全下）的弃牌计数
+            if (meta.facingHeavy) s.foldsToHeavy += 1;
+          } else if (a === 'call') s.callsFaced += 1;
           else if (a === 'raise' || a === 'pressure' || a === 'heavy' || a === 'allin') s.raisesFaced += 1;
         }
         break;
@@ -108,6 +111,12 @@ export class PlayerModel {
       noFoldVsHeavy: s.readThenHeavy >= 2 && s.reads >= 3,
       trapSuspect: s.pressureThenHeavy >= 2 && s.pressure >= 3,
     };
+  }
+
+  /** v5 Boss 反读：给定模式名与阈值，判断玩家的明显行为是否已成形。 */
+  patternArmed(pattern, threshold) {
+    const v = Number(this.s[pattern] ?? 0);
+    return Number.isFinite(v) && v >= (threshold ?? 1);
   }
 
   /** BUSTED! 是否可发动（外加冷却与最小手数由调用方校验）。 */

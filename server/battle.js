@@ -24,7 +24,7 @@ import { matchCrackRule, buildCrack } from './boss/crack-rules.js';
 import { makeFragment, flashMs } from './boss/fragments.js';
 import { PlayerModel } from './boss/playermodel.js';
 import { FINAL_HEART, DEFEAT_LINE } from './boss/talk.js';
-import { MOODS, isDownEvent } from './boss/mental.js';
+import { MOODS, FACES, isDownEvent, applyTransition } from './boss/mental.js';
 
 export const PLAYER = 0;
 export const BOSS = 1;
@@ -43,6 +43,30 @@ const GOTCHA_OK = new Set(['fold', 'call', 'check', 'raise', 'bet']);
 const NORMAL_OK = new Set(['fold', 'call', 'check', 'pressure', 'heavy', 'allin']);
 /** 自动泄漏触发：任意一方完成 CALL / RAISE（v4 契约 §十）。 */
 const LEAK_TRIGGERS = new Set(['call', 'raise']);
+/** 街段顺序（Focus 授予用）。 */
+const STREET_ORDER = ['preflop', 'flop', 'turn', 'river'];
+const clamp01 = (v) => Math.max(0, Math.min(0.95, v));
+
+/**
+ * Boss 行动的 Tell 强度档（方案 §4）：check < bet < fold < call < raise < heavy ≤ allin。
+ * heavy = 注码 ≥ heavyFrac×行动前池。
+ */
+function tellTier(action, put, potBefore, heavyFrac) {
+  if (action === 'allin') return 'allin';
+  if (action === 'check') return 'check';
+  if (action === 'call') return 'call';
+  if (action === 'fold') return 'fold';
+  const ratio = put / Math.max(1, potBefore);
+  if (ratio >= heavyFrac) return 'heavy';
+  return action === 'raise' ? 'raise' : 'bet';
+}
+
+/** 每批碎片条数（min..max 均匀取整）。 */
+function randomCount(range, rng) {
+  const lo = range?.min ?? 3;
+  const hi = Math.max(lo, range?.max ?? lo);
+  return lo + Math.floor(rng() * (hi - lo + 1));
+}
 void IMPORTANT;
 
 function emptyLegal() {
@@ -95,11 +119,16 @@ export class Battle {
     this.readFragments = []; // [{ id|null, text, atHand }] 最新在前
     this.cracks = [];        // 本手已验证成功的「情报×行动」CRACK
     this.crackSeq = 0;
-    // ---- READ 资源与 PIN（v4）----
-    this.readsLeft = this.balance.readUsesPerHand ?? 2;
+    // ---- Tell Window / Focus / PIN（v5）----
     this.readCooldownUntil = 0;
-    this.fragmentSeq = 0;
-    this.handFragments = new Map(); // 本手手工 READ 的碎片元数据（id → meta，服务端私有）
+    this.focus = this.balance.focus?.max ?? 0; // 首手由 beginHand 归 0；字段先建
+    this.focusMax = this.balance.focus?.max ?? 2;
+    this.tellSeq = 0;
+    this.actionSeq = 0;
+    this.tellWindow = null;         // 当前心理窗口 {id,actionId,handId,street,bossAction,tier}
+    this.pendingBossCounter = null; // Boss 反读陷阱（随窗口生死）
+    this.playerState = 'CALM';      // 玩家心理状态（跨手持续，newgame 复位）
+    this.handFragments = new Map(); // 窗口内碎片元数据（id → meta，服务端私有）
     this.pinned = null;             // 唯一保留位（字段不叫 pin：会遮蔽方法 pin()）：{ fragmentId, text, type, tags, sourceAction, handId, verified }
     // ---- GOTCHA 负债状态 ----
     this.gotchaDepth = 0;           // 自动泄漏深度（TRUE 比例随深度上升）
@@ -162,9 +191,10 @@ export class Battle {
     this.boss.resetHand();
     this.cracks = [];
     this.crackSeq = 0;
-    this.readsLeft = this.balance.readUsesPerHand ?? 2;
+    this.focus = 0; // ★ Focus 每手从 0 开始（翻前不开放 READ）
     this.readCooldownUntil = 0;
-    this.fragmentSeq = 0;
+    this.tellWindow = null;
+    this.pendingBossCounter = null;
     this.handFragments.clear();
     this.pinned = null;
     this.gotchaDepth = 0;
@@ -215,6 +245,100 @@ export class Battle {
     return t;
   }
 
+  // ------------------------------------------------- v5：Tell/Focus/反读/窗口
+
+  /** 跨街授予 Focus（flop/turn/river 各 +1，封顶 focusMax；翻前0）。 */
+  #grantFocus(fromStreet, toStreet) {
+    const grant = this.balance.focus?.streetGrant ?? {};
+    const fromIdx = STREET_ORDER.indexOf(fromStreet);
+    const toIdx = STREET_ORDER.indexOf(toStreet);
+    if (fromIdx < 0 || toIdx <= fromIdx) return;
+    for (let i = fromIdx + 1; i <= toIdx; i++) {
+      this.focus = Math.min(this.focusMax, this.focus + (grant[STREET_ORDER[i]] ?? 0));
+    }
+  }
+
+  /**
+   * 关闭当前窗口并清空即时心理信息（方案 §2）：
+   * 无论 CRACK 成败，碎片与 PIN 都不得跨越下一次 Poker 决策。
+   */
+  #closeTellWindow() {
+    this.tellWindow = null;
+    this.pendingBossCounter = null;
+    this.pinned = null;
+    this.readFragments = [];
+    this.handFragments.clear();
+  }
+
+  /** Boss 反读（§9）：玩家行为模式成形 + Boss 本次行动语义命中 → 布下陷阱。 */
+  #evaluateBossCounter(normalized, putRatio) {
+    for (const rule of this.balance.bossCounterRules ?? []) {
+      if (!this.model.patternArmed(rule.pattern, rule.threshold)) continue;
+      if (this.#bossActionMatches(rule.bossAction, normalized, putRatio)) {
+        return {
+          ruleId: rule.ruleId ?? rule.id,
+          bossAction: rule.bossAction,
+          playerAction: rule.playerAction,
+          why: rule.why ?? '',
+        };
+      }
+    }
+    return null;
+  }
+
+  #bossActionMatches(need, normalized, putRatio) {
+    if (need === 'check') return normalized.type === 'check';
+    if (need === 'raise') return normalized.type === 'raise';
+    if (need === 'bet') return normalized.type === 'bet';
+    if (need === 'heavy') {
+      return normalized.type === 'allin'
+        || ((normalized.type === 'bet' || normalized.type === 'raise')
+          && putRatio >= (this.balance.sizing?.heavyFrac ?? 1));
+    }
+    return false;
+  }
+
+  /** 玩家的回应落地：命中陷阱 → Boss CRACK 玩家 + 玩家心理推进（一窗一次）。 */
+  #resolveBossCounter(events, actionLabel) {
+    const trap = this.pendingBossCounter;
+    if (!trap) return;
+    this.pendingBossCounter = null;
+    if (trap.playerAction !== actionLabel) return; // 没上钩：静默失败
+    events.push({
+      type: 'player_cracked',
+      ruleId: trap.ruleId,
+      action: actionLabel,
+      bossAction: trap.bossAction,
+      why: trap.why,
+    });
+    this.#feed('model', `PLAYER CRACKED · ${trap.why}`);
+    this.#advancePlayerState(events);
+  }
+
+  /** Boss CRACK 玩家 → 玩家心理 CALM→SHAKEN→EXPOSED（同一张转移表）。 */
+  #advancePlayerState(events) {
+    const t = applyTransition(this.balance.transitions, this.playerState, 'CRACK', this.rng);
+    if (!t) return;
+    this.playerState = t.to;
+    events.push({ type: 'player_mental', from: t.from, to: t.to });
+    this.#feed('mental', `你被看穿了：${MOODS[t.from]} → ${MOODS[t.to]}`);
+  }
+
+  /**
+   * GOTCHA 窗口（§11）：心理状态创造资格 × Poker 行为创造时机。
+   * EXPOSED + TURN/RIVER + Boss 刚做出高承诺行动（本街）+ 玩家回合。
+   */
+  #gotchaWindowOpen(d = this.duel) {
+    if (this.mode !== 'NORMAL') return false;
+    if (this.boss.state !== 'EXPOSED') return false;
+    if (d.street !== 'turn' && d.street !== 'river') return false;
+    if (d.toAct !== PLAYER) return false;
+    const la = this.lastBossAction;
+    if (!la || la.street !== d.street) return false;
+    if (la.action !== 'bet' && la.action !== 'raise' && la.action !== 'allin') return false;
+    return true;
+  }
+
   /** BUSTED!：模型把握度足够 + 冷却完毕 + 运气 → Boss 专属技（本手攻击增益；v4 不再切 mode）。 */
   #maybeBusted(events) {
     if (this.mode !== 'NORMAL') return false;
@@ -260,7 +384,10 @@ export class Battle {
       });
       events.push(...engineEvents);
       this.#recordHistory('boss', normalized.type, preStreet, normalized.to ?? 0);
-      this.lastBossAction = { action: normalized.type, amount: normalized.to ?? 0, street: preStreet };
+      const bossPutRatio = (normalized.put ?? 0) / Math.max(1, potBefore);
+      this.lastBossAction = { action: normalized.type, amount: normalized.to ?? 0, street: preStreet, ratio: bossPutRatio };
+      // Focus：跨街授予（进 flop/turn/river 各 +1，封顶）
+      this.#grantFocus(preStreet, d.street);
 
       this.boss.noteAction({ action: normalized.type, intent: decision.intent, street: preStreet });
       if (normalized.put > 0) {
@@ -273,12 +400,37 @@ export class Battle {
         this.#maybeAutoLeak(events, normalized.type);
       }
 
-      // 台词（v3/v4：只承担人格与情绪的表达）
+      // 台词（只承担人格与情绪的表达）
       const talk = this.boss.talkFor({ action: normalized.type, street: preStreet });
       if (talk) {
         this.lastLine = talk.text;
         events.push({ type: 'talk', line: talk.text });
         this.#feed('talk', talk.text);
+      }
+
+      // ★ Tell Window（方案 §1）：Boss 行动后玩家仍需在同街回应 → 开心理窗口；
+      //   同时按玩家行为模式评估 Boss 反读陷阱（§9），随窗口生死
+      this.#closeTellWindow();
+      if (d.phase === 'playing' && d.toAct === PLAYER && preStreet === d.street) {
+        const tier = tellTier(normalized.type, normalized.put ?? 0, potBefore, this.balance.sizing?.heavyFrac ?? 1);
+        this.actionSeq += 1;
+        this.tellSeq += 1;
+        this.tellWindow = {
+          id: this.tellSeq,
+          actionId: this.actionSeq,
+          handId: this.handNo,
+          street: d.street,
+          bossAction: normalized.type,
+          tier,
+        };
+        events.push({
+          type: 'tell_window_open',
+          id: this.tellWindow.id,
+          actionId: this.tellWindow.actionId,
+          street: this.tellWindow.street,
+          bossAction: normalized.type,
+        });
+        this.pendingBossCounter = this.#evaluateBossCounter(normalized, bossPutRatio);
       }
 
       if (d.phase !== 'playing') {
@@ -307,10 +459,10 @@ export class Battle {
       events.push({ type: 'pot_move', to: winner, amount: pot });
     }
 
+    // ⚠ v5（方案 §8）：心理与筹码分离 —— 输赢 pot 不再触发任何情绪事件。
+    //    bluffCaught 仅用于 hand_end 的打击演出标记。
     const bluffCaught = r.type === 'showdown' && bossLost
       && this.handAggressiveIntents.some((a) => a.intent === 'BLUFF');
-    const bigPotLost = bossLost && pot >= (this.balance.bigPotLostRatio ?? 0.2) * this.balance.stacks.boss;
-    const allInLost = bossLost && (d.allIn[BOSS] || d.allIn[PLAYER]);
 
     // 摊牌记录进 Player Model
     if (r.type === 'showdown') {
@@ -318,12 +470,6 @@ export class Battle {
         playerWon: winner === PLAYER,
         playerAggressive: this.playerAggressive,
       });
-    }
-
-    if (bossLost) {
-      if (allInLost) this.#fire(events, 'ALL_IN_LOST');
-      else if (bigPotLost) this.#fire(events, 'BIG_POT_LOST');
-      if (bluffCaught) this.#fire(events, 'BLUFF_CAUGHT');
     }
 
     // 赢牌后的台词
@@ -477,10 +623,8 @@ export class Battle {
       handNo: crack.handNo,
     });
     this.#feed('crack', `CRACK! [${crack.kind}] ${crack.evidence.join(' + ')} × ${actionLabel} —— ${crack.why}`);
-    const need = this.balance.cracksForGotcha ?? 2;
-    if (this.cracks.length === need) {
-      this.#feed('gotcha', `GOTCHA 解锁！（${this.cracks.length}/${need} 个 CRACK）`);
-    }
+    // ★ §6：CRACK = 心理攻击命中，立即推进 Boss 心理状态（CALM→SHAKEN→EXPOSED）
+    this.#fire(events, 'CRACK');
   }
 
   act(action, amount) {
@@ -532,20 +676,32 @@ export class Battle {
     events.push(...outEvents);
     this.#recordHistory('player', displayAction, preStreet, normalized.to ?? 0);
 
+    // ---- ★ v5 心理结算（顺序关键：必须在窗口清理之前）----
+    // 1) PIN 的真话 × 本次行动 × Boss 当前 intent → 可能 CRACK 并推进其心理
+    this.#validatePinCrack(events, displayAction);
+    // 2) Boss 反读陷阱：玩家命中被诱导的行为 → PLAYER CRACKED + 玩家心理推进
+    this.#resolveBossCounter(events, displayAction);
+    // 3) 回应落地 → 窗口关闭、碎片/PIN 全部清空（无论成败，方案 §2）
+    this.#closeTellWindow();
+    // 4) Focus 跨街授予（本行动可能推进了街）
+    this.#grantFocus(preStreet, d.street);
+
     // ---- GOTCHA：阶梯翻倍 + 自动泄漏 ----
     if (this.mode === 'GOTCHA') {
       if (normalized.type === 'raise') this.#bumpRaiseStep();
       this.#maybeAutoLeak(events, normalized.type);
     }
 
-    // ---- ★ 每次成功行动后验证 PIN → 可能形成 CRACK ----
-    this.#validatePinCrack(events, displayAction);
-
     // ---- Player Model 记账（READ→HEAVY 等习惯；先置窗口再消费）----
     if (displayAction === 'pressure') this.model.record('pressure');
+    const bossLast = this.lastBossAction;
     this.model.record('action', {
       action: displayAction,
       facingBet: (d.currentBet - d.committed[PLAYER]) > 0 || normalized.type === 'call' || normalized.type === 'raise',
+      // §9 反读模式：面对重注家族（≥heavyFrac 或全下）的弃牌计数
+      facingHeavy: Boolean(bossLast
+        && bossLast.street === preStreet
+        && (bossLast.action === 'allin' || (bossLast.ratio ?? 0) >= (this.balance.sizing?.heavyFrac ?? 1))),
     });
 
     if (normalized.put > 0) this.playerAggressive = true;
@@ -563,25 +719,37 @@ export class Battle {
   // ------------------------------------------------------------ READ（v4 批量 + 限量）
 
   /**
-   * READ：每手限量（readUsesPerHand），一次返回一组心理碎片（3–5 条）。
-   * 只有手工 READ 的碎片带 id（可 PIN）；类型与标签只在服务端。
+   * READ（v5）：只在 Tell Window 内可用，消耗 Focus，一次返回一批碎片（一窗一批）。
+   * TRUE 概率由「基础权重 + Boss行动Tell强度 + 街段 + 心理状态」公式决定（方案 §4）。
+   * 类型与标签只在服务端；碎片 id 绑定窗口（w{windowId}f{n}）。
    */
   read() {
-    this.#requirePlayerTurn();
     if (this.mode === 'GOTCHA') {
       throw new GameError('GOTCHA 中自动泄漏，无需手动 READ', 'GOTCHA_AUTO_READ');
     }
-    if (this.readsLeft <= 0) throw new GameError('这一手的 READ 次数已用完', 'READ_EXHAUSTED');
+    this.#requirePlayerTurn();
+    const win = this.tellWindow;
+    if (!win) {
+      throw new GameError('当前没有心理窗口（等他先行动）', 'NO_TELL_WINDOW');
+    }
+    const focusCost = this.balance.focus?.cost ?? 1;
+    if (this.focus < focusCost) throw new GameError('Focus 不足', 'NO_FOCUS');
     const t = this.now();
     if (t < this.readCooldownUntil) throw new GameError('READ 正在冷却', 'READ_COOLING');
 
     const events = [];
     const balance = this.balance;
+    const rd = balance.read ?? {};
     const state = this.boss.state;
+    // ★ 信息质量公式（§4）：真话浓度来自“他刚做了什么 + 第几条街 + 他什么状态”
+    const trueRate = clamp01(
+      (rd.baseTrueWeight ?? 0.2)
+      + (rd.tellStrength?.[win.tier] ?? 0)
+      + (rd.streetModifier?.[win.street] ?? 0)
+      + (rd.stateModifier?.[state] ?? 0),
+    );
     const intent = this.boss.currentIntent();
-    const range = balance.normalReadFragmentCount ?? { min: 3, max: 5 };
-    const hi = Math.max(range.min, range.max);
-    const count = range.min + Math.floor(this.rng() * (hi - range.min + 1));
+    const count = randomCount(balance.normalReadFragmentCount, this.rng);
 
     const fragments = [];
     const entries = [];
@@ -590,46 +758,58 @@ export class Battle {
         state,
         intent,
         equity: this.boss.lastEquity,
-        street: this.duel.street,
+        street: win.street,
+        trueRate,
         balance,
         rng: this.rng,
       });
-      const id = `f${++this.fragmentSeq}`;
+      const id = `w${win.id}f${i + 1}`;
       this.handFragments.set(id, {
         id,
         text: frag.text,
         type: frag.type,          // ★ 服务端私有
         tags: frag.tags.slice(),  // ★ 服务端私有
         strength: frag.strength,
-        sourceAction: this.boss.lastActionInfo?.action ?? null,
-        handId: this.handNo,
+        sourceAction: win.bossAction,
+        binding: { handId: win.handId, street: win.street, actionId: win.actionId, tellWindowId: win.id },
       });
       fragments.push({ id, text: frag.text });
-      entries.push({ id, text: frag.text, atHand: this.handNo });
+      entries.push({ id, text: frag.text, atHand: this.handNo, tellWindowId: win.id });
       this.#feed('read', frag.text);
     }
     // 整批按序插到面板最前（f0 在最上）：与闪现堆叠顺序一致
     this.readFragments.unshift(...entries);
     if (this.readFragments.length > 30) this.readFragments.length = 30;
 
-    this.readsLeft -= 1;
-    this.readCooldownUntil = t + (balance.read.cooldownMs ?? 400);
+    this.focus -= focusCost;
+    this.readCooldownUntil = t + (rd.cooldownMs ?? 400);
     this.model.record('read');
-    events.push({ type: 'read_batch', source: 'manual', flashMs: flashMs(state, balance), fragments });
+    events.push({
+      type: 'read_batch',
+      source: 'manual',
+      tellWindowId: win.id,
+      actionId: win.actionId,
+      flashMs: flashMs(state, balance),
+      fragments,
+    });
     return { view: this.view(), events };
   }
 
-  /** PIN：保留一条本手手工 READ 的碎片（单槽，新覆盖旧）。玩家只见 text。 */
+  /** PIN（v5）：保留当前心理窗口产出的一条碎片（单槽，新覆盖旧）。玩家只见 text。 */
   pin(fragmentId) {
     this.#requirePlayerTurn();
     const meta = this.handFragments.get(String(fragmentId));
-    if (!meta) throw new GameError('这条碎片已不可保留（仅限本手 READ）', 'BAD_FRAGMENT');
+    // 生命周期（方案 §2）：跨窗口/手牌的旧碎片一律不可保留
+    if (!meta || !this.tellWindow || meta.binding?.tellWindowId !== this.tellWindow.id) {
+      throw new GameError('这条碎片不属于当前心理窗口', 'BAD_FRAGMENT');
+    }
     this.pinned = {
       fragmentId: meta.id,
       text: meta.text,
       type: meta.type,
       tags: meta.tags.slice(),
       sourceAction: meta.sourceAction,
+      binding: meta.binding,
       handId: meta.handId,
       verified: false,
     };
@@ -646,10 +826,10 @@ export class Battle {
     this.#requirePlayerTurn();
     const events = [];
     const d = this.duel;
-    const need = this.balance.cracksForGotcha ?? 2;
     if (this.mode !== 'NORMAL') throw new GameError('已经处于 GOTCHA 中', 'ALREADY_GOTCHA');
-    if (this.cracks.length < need) {
-      throw new GameError(`CRACK 还不够（${this.cracks.length}/${need}）`, 'GOTCHA_NOT_ARMED');
+    // ★ v5（§11）：资格 = EXPOSED；时机 = TURN/RIVER × Boss 高承诺行动（本街）× 玩家回合
+    if (!this.#gotchaWindowOpen(d)) {
+      throw new GameError('GOTCHA 窗口未开启（需 EXPOSED + 转牌/河牌 + 他刚高承诺下注）', 'GOTCHA_WINDOW_CLOSED');
     }
     if (d.allIn[0] || d.allIn[1]) throw new GameError('已有人全下，无法进入负债状态', 'GOTCHA_LOCKED');
 
@@ -660,11 +840,8 @@ export class Battle {
     this.enteredGotchaThisHand = true;
 
     events.push({ type: 'mode', mode: 'GOTCHA' });
-    this.#feed('gotcha', `GOTCHA！双方解除筹码上限 —— 负债下注开始（${this.cracks.length} 个 CRACK 触发）`);
+    this.#feed('gotcha', 'GOTCHA！双方解除筹码上限 —— 负债下注开始（资格：EXPOSED × 时机：本街高承诺行动）');
     this.#feed('mode', 'GOTCHA · 临时余额可以为负，FOLD/SHOWDOWN 统一结算');
-    // 被看穿到敢押上全部 → 情绪；连续两手上头
-    this.#fire(events, 'GOTCHA_HIT');
-    if (this.enteredGotchaPrevHand) this.#fire(events, 'GOTCHA_STREAK');
     return { view: this.view(), events };
   }
 
@@ -716,10 +893,9 @@ export class Battle {
       handName = evaluate([...d.hole[PLAYER], ...d.board]).nameZh;
     }
 
-    // GOTCHA 解锁提示（仅 NORMAL 且 CRACK 达标）
-    const need = this.balance.cracksForGotcha ?? 2;
-    const gotchaArmed = this.mode === 'NORMAL' && this.cracks.length >= need
-      ? { cracks: this.cracks.length, need }
+    // ★ GOTCHA 窗口（§11）：资格（EXPOSED）× 时机（TURN/RIVER × 高承诺行动 × 玩家回合）
+    const gotchaArmed = this.#gotchaWindowOpen(d)
+      ? { street: d.street, bossAction: this.lastBossAction.action }
       : null;
 
     return {
@@ -730,6 +906,16 @@ export class Battle {
       board: d.board.slice(),
       button: d.button,
       toAct: playing ? d.toAct : null,
+      // 心理窗口（READ 的唯一可用时机；tier 是内部信息，剥掉）
+      tellWindow: this.tellWindow
+        ? {
+            id: this.tellWindow.id,
+            actionId: this.tellWindow.actionId,
+            handId: this.tellWindow.handId,
+            street: this.tellWindow.street,
+            bossAction: this.tellWindow.bossAction,
+          }
+        : null,
       blind: { sb: blind.sb, bb: blind.bb, tier: blind.tier, nextUp: blind.nextUp },
       effectiveStack: Math.min(d.stacks[PLAYER], d.stacks[BOSS]),
       mode: this.mode,
@@ -740,9 +926,14 @@ export class Battle {
         toCall: Math.max(0, d.currentBet - d.committed[PLAYER]),
         handName,
         legal: playerTurn ? this.#viewLegal() : emptyLegal(),
-        readsLeft: this.readsLeft,           // ★ 本手剩余 READ（UI: READ 2/2）
-        readsPerHand: this.balance.readUsesPerHand ?? 2,
+        // ★ Focus（§3）：翻前0，进街+1，上限 focusMax；READ 消耗 cost
+        focus: this.focus,
+        focusMax: this.focusMax,
         readCooldownUntil: this.readCooldownUntil,
+        // ★ 玩家心理状态（§10，与 Boss 对称的三态；当前只展示）
+        state: this.playerState,
+        face: FACES[this.playerState] ?? FACES.CALM,
+        mood: MOODS[this.playerState] ?? MOODS.CALM,
       },
       boss: {
         chips: d.stacks[BOSS],
@@ -769,7 +960,7 @@ export class Battle {
         result: c.result ?? null,
       })),
       history: this.history.slice(),
-      readFragments: this.readFragments.map((f) => ({ id: f.id ?? null, text: f.text, atHand: f.atHand })),
+      readFragments: this.readFragments.map((f) => ({ id: f.id ?? null, text: f.text, atHand: f.atHand, tellWindowId: f.tellWindowId ?? null })),
       feed: this.feed.slice(),
     };
   }

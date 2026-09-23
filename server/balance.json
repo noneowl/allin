@@ -44,29 +44,49 @@
   ],
   "read": {
     "cooldownMs": 400,
-    "burstChanceInExecution": 0.25,
     "flashMs": {
       "CALM": 1400,
       "SHAKEN": 1100,
-      "TILT": 800
+      "EXPOSED": 900
     },
     "executionFlashScale": 0.6,
     "mix": {
       "CALM": {
-        "TRUE": 0.25,
-        "NOISE": 0.5,
+        "TRUE": 0.3,
+        "NOISE": 0.45,
         "DISTORTION": 0.25
       },
       "SHAKEN": {
-        "TRUE": 0.45,
-        "NOISE": 0.2,
-        "DISTORTION": 0.35
+        "TRUE": 0.4,
+        "NOISE": 0.3,
+        "DISTORTION": 0.3
       },
-      "TILT": {
+      "EXPOSED": {
         "TRUE": 0.5,
-        "NOISE": 0.1,
-        "DISTORTION": 0.4
+        "NOISE": 0.2,
+        "DISTORTION": 0.3
       }
+    },
+    "baseTrueWeight": 0.2,
+    "tellStrength": {
+      "check": 0.0,
+      "bet": 0.05,
+      "fold": 0.07,
+      "call": 0.1,
+      "raise": 0.15,
+      "heavy": 0.2,
+      "allin": 0.22
+    },
+    "streetModifier": {
+      "preflop": -0.05,
+      "flop": 0.0,
+      "turn": 0.08,
+      "river": 0.16
+    },
+    "stateModifier": {
+      "CALM": 0.0,
+      "SHAKEN": 0.1,
+      "EXPOSED": 0.2
     }
   },
   "gotcha": {
@@ -113,82 +133,42 @@
       "risk": 0.0,
       "variance": 0.15,
       "trapChance": 0.0,
-      "hint": "冷静克制 · 碎片泄漏少、噪音多 —— 多读几条再下判断"
+      "hint": "冷静按人格打 · Tell 泄漏最少 —— 想读他就先击穿他"
     },
     "SHAKEN": {
-      "bluff": 0.12,
-      "raiseFreq": 0.08,
+      "bluff": 0.15,
+      "raiseFreq": 0.1,
       "betSize": 0.1,
-      "aggression": 0.12,
+      "aggression": 0.15,
       "foldThreshold": -0.03,
       "callThreshold": -0.04,
-      "risk": 0.08,
-      "variance": 0.28,
+      "risk": 0.1,
+      "variance": 0.3,
       "trapChance": 0.05,
-      "hint": "动摇 · 真实意图开始泄漏，碎片里真话变多"
+      "hint": "动摇 · Tell 真话变多、打法开始偏离 —— 欺骗型会更凶更爱演"
     },
-    "TILT": {
-      "bluff": 0.28,
-      "raiseFreq": 0.22,
-      "betSize": 0.3,
-      "aggression": 0.32,
-      "foldThreshold": -0.08,
-      "callThreshold": -0.08,
-      "risk": 0.28,
+    "EXPOSED": {
+      "bluff": 0.3,
+      "raiseFreq": 0.2,
+      "betSize": 0.25,
+      "aggression": 0.3,
+      "foldThreshold": -0.06,
+      "callThreshold": -0.06,
+      "risk": 0.25,
       "variance": 0.45,
       "trapChance": 0.05,
-      "hint": "上头 · 真话密集、同时满嘴错觉 —— 最容易读，也最容易骗到你"
+      "hint": "被看穿 · Tell 浓度最高、行为明显失控 —— 高承诺行动时可发动 GOTCHA"
     }
   },
   "transitions": {
-    "comment": "v4：GOTCHA_HIT=玩家进入GOTCHA；GOTCHA_STREAK=连续两手进入GOTCHA。BLUFF_CAUGHT/输大池照旧。单向 CALM→SHAKEN→TILT。",
-    "BLUFF_CAUGHT": {
+    "comment": "v5：心理只被玩家 CRACK 推进（CALM→SHAKEN→EXPOSED）；进入 GOTCHA 时已是 EXPOSED（无需再转移）。赢输 pot 不再影响心理（方案 §6/§8）。",
+    "CRACK": {
       "CALM": [
         "SHAKEN",
         1.0
       ],
       "SHAKEN": [
-        "TILT",
-        0.3
-      ]
-    },
-    "GOTCHA_HIT": {
-      "CALM": [
-        "SHAKEN",
-        1.0
-      ],
-      "SHAKEN": [
-        "TILT",
-        0.45
-      ]
-    },
-    "GOTCHA_STREAK": {
-      "CALM": [
-        "SHAKEN",
-        0.8
-      ],
-      "SHAKEN": [
-        "TILT",
-        1.0
-      ]
-    },
-    "BIG_POT_LOST": {
-      "CALM": [
-        "SHAKEN",
-        0.7
-      ],
-      "SHAKEN": [
-        "TILT",
-        0.7
-      ]
-    },
-    "ALL_IN_LOST": {
-      "CALM": [
-        "SHAKEN",
-        0.9
-      ],
-      "SHAKEN": [
-        "TILT",
+        "EXPOSED",
         1.0
       ]
     }
@@ -204,12 +184,10 @@
     "pressureFrac": 0.5,
     "heavyFrac": 1.0
   },
-  "bigPotLostRatio": 0.2,
   "winQuipChance": 0.45,
   "rng": {
     "seed": null
   },
-  "readUsesPerHand": 2,
   "normalReadFragmentCount": {
     "min": 3,
     "max": 5
@@ -219,7 +197,6 @@
     "max": 6
   },
   "pinSlots": 1,
-  "cracksForGotcha": 2,
   "psychologyActionRules": [
     {
       "id": "call_vs_wants_fold",
@@ -396,5 +373,40 @@
     "minHand": 3,
     "cooldownHands": 4,
     "line": "我看穿你了 —— 全部下注！"
-  }
+  },
+  "focus": {
+    "max": 2,
+    "cost": 1,
+    "streetGrant": {
+      "flop": 1,
+      "turn": 1,
+      "river": 1
+    }
+  },
+  "bossCounterRules": [
+    {
+      "id": "fear_pressure",
+      "pattern": "foldsToHeavy",
+      "threshold": 2,
+      "bossAction": "heavy",
+      "playerAction": "fold",
+      "why": "他面对重注就跑 → 我推重注，他果然跑"
+    },
+    {
+      "id": "over_call",
+      "pattern": "callsFaced",
+      "threshold": 3,
+      "bossAction": "raise",
+      "playerAction": "call",
+      "why": "他什么都接 → 我加注，他果然接"
+    },
+    {
+      "id": "agg_punish",
+      "pattern": "lostAsAggressor",
+      "threshold": 2,
+      "bossAction": "check",
+      "playerAction": "bet",
+      "why": "他输急眼爱开火 → 我让牌，他果然开火"
+    }
+  ]
 }
