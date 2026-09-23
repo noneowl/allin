@@ -66,10 +66,12 @@ const ROUTES = {
 
   'POST /api/read': () => battle.read(),
 
-  'POST /api/gotcha': async (req) => {
+  'POST /api/pin': async (req) => {
     const body = await readBody(req);
-    return battle.gotcha(body.guess);
+    return battle.pin(body.fragmentId);
   },
+
+  'POST /api/gotcha': () => battle.gotcha(),
 
   'POST /api/newgame': () => battle.newGame(),
 };

@@ -45,6 +45,12 @@ export class Duel {
     this.toAct = null;
     this.result = null;
     this.lastPut = [0, 0]; // 每次行动投入了多少（筹码动画用）
+    /**
+     * 负债模式（GOTCHA 状态专用）：解除 Stack 对 call/bet/raise 的上限，
+     * 允许临时余额为负；不产生 all-in 语义、不触发 runout。
+     * 每次 startHand 强制复位 —— 负数筹码绝不进入下一手的普通阶段。
+     */
+    this.debtMode = false;
   }
 
   get pot() {
@@ -59,12 +65,17 @@ export class Duel {
    * @returns {object[]} 事件
    */
   startHand(opts = {}) {
+    // §十三 双保险：负数筹码绝不进入普通阶段（战斗层在结算后已先行判负）
+    if (this.stacks.some((v) => v < 0)) {
+      throw new GameError('负数筹码不能进入新手牌', 'NEGATIVE_STACK');
+    }
     if (opts.button !== undefined) this.button = opts.button & 1;
     const deck = opts.deck ? opts.deck.slice() : null;
     if (deck && deck.length !== 52) throw new GameError('注入的牌堆必须是 52 张', 'BAD_DECK');
 
     this.phase = 'playing';
     this.street = 'preflop';
+    this.debtMode = false; // ★ 负债绝不进入下一手的普通阶段
     this.deck = deck ?? freshDeck();
     this.board = [];
     this.hole = [[], []];
@@ -116,25 +127,29 @@ export class Duel {
     if (this.phase !== 'playing' || this.folded[seat]) return out;
     const stack = this.stacks[seat];
     const toCall = this.currentBet - this.committed[seat];
+    const debt = this.debtMode;
 
     if (toCall > 0) {
       out.push({ type: 'fold' });
-      out.push({ type: 'call', amount: Math.min(stack, toCall) });
+      // 负债模式：跟注不受剩余筹码限制（可以跟到负数）
+      out.push({ type: 'call', amount: debt ? toCall : Math.min(stack, toCall) });
     } else {
       out.push({ type: 'check' });
     }
 
-    if (stack > 0) {
-      const maxTo = this.committed[seat] + stack;
+    const canAct = debt || stack > 0;
+    if (canAct) {
+      const maxTo = debt ? Infinity : this.committed[seat] + stack;
       if (this.mayRaise[seat]) {
         if (this.currentBet === 0) {
-          out.push({ type: 'bet', minTo: Math.min(this.bigBlind, maxTo), maxTo });
+          out.push({ type: 'bet', minTo: debt ? this.bigBlind : Math.min(this.bigBlind, maxTo), maxTo });
         } else if (maxTo > this.currentBet) {
           const minTo = Math.min(this.currentBet + this.lastRaiseSize, maxTo);
           out.push({ type: 'raise', minTo, maxTo });
         }
       }
-      out.push({ type: 'allin', to: maxTo });
+      // 负债模式没有 all-in 语义（上限已解除，无需梭）
+      if (!debt) out.push({ type: 'allin', to: maxTo === Infinity ? this.committed[seat] + stack : maxTo });
     }
     return out;
   }
@@ -205,13 +220,14 @@ export class Duel {
     const prevCommitted = this.committed[seat];
     const prevBet = this.currentBet;
     const put = to - prevCommitted;
-    if (put > this.stacks[seat]) throw new GameError('筹码不足', 'SHORT_STACK');
+    if (!this.debtMode && put > this.stacks[seat]) throw new GameError('筹码不足', 'SHORT_STACK');
 
-    this.stacks[seat] -= put;
+    this.stacks[seat] -= put; // 负债模式下允许变为负数（临时债务）
     this.total[seat] += put;
     this.committed[seat] = to;
     this.lastPut[seat] = put;
-    if (this.stacks[seat] === 0) this.allIn[seat] = true;
+    // 负债模式不产生 all-in（也不因恰好到0而锁死继续下注）
+    if (!this.debtMode && this.stacks[seat] === 0) this.allIn[seat] = true;
     this.acted[seat] = true;
 
     // 是否抬价（开注 / 加注）
@@ -240,13 +256,15 @@ export class Duel {
 
   // ------------------------------------------------------------------ 推进
 
-  /** 未被跟注的筹码退还：弃牌结算时无条件；仍在手时仅当落后方已全下。 */
+  /** 未被跟注的筹码退还：弃牌结算时无条件；仍在手时仅当落后方已全下（负债模式中不存在全下）。 */
   _settleRefund() {
+    const settledByFold = this.folded[0] || this.folded[1];
+    // 负债模式：非弃牌结算绝不能因为 stack===0 退款 —— 债务还没结，注码不齐就还能继续
+    if (this.debtMode && !settledByFold) return;
     const diff = this.total[0] - this.total[1];
     if (diff === 0) return;
     const hi = diff > 0 ? 0 : 1;
     const lo = 1 - hi;
-    const settledByFold = this.folded[0] || this.folded[1];
     if (!settledByFold && this.stacks[lo] !== 0) return;
     const excess = this.total[hi] - this.total[lo];
     if (excess > 0) {

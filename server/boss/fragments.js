@@ -23,6 +23,11 @@ export const TRUE_FAMILIES = {
     '接了就糟了。',
     '我最怕他这时候跟。',
   ],
+  fear_raise: [
+    '他可别再加了。',
+    '千万别加注。',
+    '他一动手我就难受。',
+  ],
   weak_hand: [
     '这一手没什么底气。',
     '撑不了几条街。',
@@ -100,18 +105,6 @@ export const DISTORTION_POOL = {
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-/** 按状态权重抽类型。 */
-function rollType(mix, rng) {
-  const entries = Object.entries(mix);
-  const total = entries.reduce((s, [, w]) => s + w, 0);
-  let roll = rng() * total;
-  for (const [type, w] of entries) {
-    roll -= w;
-    if (roll <= 0) return type;
-  }
-  return 'NOISE';
-}
-
 /**
  * TRUE 碎片的家族选择：由 Boss 真实处境（intent + 胜率）决定 —— TRUE 必须是真的。
  * @returns {string|null} tag，null 表示没有可用的真实泄漏（回落 NOISE）
@@ -125,10 +118,11 @@ function pickTrueFamily(ctx, rng) {
   let weights;
   if (intent === 'BLUFF' || intent === 'PROBE') {
     weights = [
-      ['wants_fold', 0.42],
-      ['fear_call', 0.3],
-      ['missed_board', 0.16],
-      ['weak_hand', 0.12],
+      ['wants_fold', 0.32],
+      ['fear_call', 0.24],
+      ['fear_raise', 0.24],
+      ['missed_board', 0.1],
+      ['weak_hand', 0.1],
     ];
   } else if (intent === 'VALUE') {
     weights = [
@@ -154,28 +148,41 @@ function pickTrueFamily(ctx, rng) {
 
 /**
  * 生成一条碎片。
- * @param {object} ctx { state, intent, equity, street, execution, balance, rng }
- * @returns {{ text, type, tags: string[], strength, critical }}
+ * @param {object} ctx { state, intent, equity, street, trueRate?, balance, rng }
+ *   - trueRate（可选）：直接指定 TRUE 概率（GOTCHA 自动泄漏按深度传入），
+ *     剩余概率按状态表在 NOISE / DISTORTION 之间分配；不传则用状态 mix 表。
+ * @returns {{ text, type, tags: string[], strength }}
  */
 export function makeFragment(ctx) {
-  const { state = 'CALM', execution = false, balance, rng = Math.random } = ctx;
+  const { state = 'CALM', intent, equity = 0.5, street = 'flop', trueRate, balance, rng = Math.random } = ctx;
   const read = balance.read;
 
-  // 类型权重：EXECUTION 提升 TRUE 占比（信息量更高）
-  const mix = { ...(read.mix[state] ?? read.mix.CALM) };
-  if (execution) {
-    mix.TRUE = clamp(mix.TRUE * 1.8, 0, 0.85);
-    mix.DISTORTION = clamp(mix.DISTORTION * 0.8, 0, 1);
+  let type;
+  if (typeof trueRate === 'number' && trueRate >= 0) {
+    const mix = read.mix[state] ?? read.mix.CALM;
+    const rest = 1 - trueRate;
+    const noiseShare = (mix.NOISE ?? 0.2) / Math.max(0.001, (mix.NOISE ?? 0.2) + (mix.DISTORTION ?? 0.2));
+    if (rng() < trueRate) type = 'TRUE';
+    else type = rng() < noiseShare ? 'NOISE' : 'DISTORTION';
+    void rest;
+  } else {
+    const mix = { ...(read.mix[state] ?? read.mix.CALM) };
+    const total = Object.values(mix).reduce((s, w) => s + w, 0);
+    let roll = rng() * total;
+    type = 'NOISE';
+    for (const [t, w] of Object.entries(mix)) {
+      roll -= w;
+      if (roll <= 0) { type = t; break; }
+    }
   }
-  let type = rollType(mix, rng);
 
-  // Boss 还没做过重要行动 → 没有 intent 可泄漏，只出噪音/错觉
-  if (type === 'TRUE' && !ctx.intent) type = rng() < 0.5 ? 'NOISE' : 'DISTORTION';
+  // Boss 还没做过重要行动 → 没有 intent 可泄漏，绝不产出 TRUE
+  if (type === 'TRUE' && !intent) type = rng() < 0.5 ? 'NOISE' : 'DISTORTION';
 
   if (type === 'NOISE') {
     return {
       text: NOISE_POOL[Math.floor(rng() * NOISE_POOL.length)],
-      type, tags: [], strength: 0.2, critical: false,
+      type, tags: [], strength: 0.2,
     };
   }
 
@@ -183,35 +190,29 @@ export function makeFragment(ctx) {
     const pool = DISTORTION_POOL[state] ?? DISTORTION_POOL.CALM;
     return {
       text: pool[Math.floor(rng() * pool.length)],
-      type, tags: [], strength: 0.35, critical: false,
+      type, tags: [], strength: 0.35,
     };
   }
 
   // TRUE
   const family = pickTrueFamily(ctx, rng);
   if (!family) {
-    const pool = NOISE_POOL;
-    return { text: pool[Math.floor(rng() * pool.length)], type: 'NOISE', tags: [], strength: 0.2, critical: false };
+    return {
+      text: NOISE_POOL[Math.floor(rng() * NOISE_POOL.length)],
+      type: 'NOISE', tags: [], strength: 0.2,
+    };
   }
   const pool = TRUE_FAMILIES[family];
-  const base = 0.55 + rng() * 0.3 + (state === 'TILT' ? 0.1 : 0) + (execution ? 0.12 : 0);
-  const strength = clamp(base, 0, 0.95);
-  const criticalable = family === 'wants_fold' || family === 'strong_hand' || family === 'trap';
-  const critical = Boolean(
-    criticalable
-    && (strength >= read.criticalStrength ? rng() < 0.5 : rng() < read.criticalChance),
-  );
+  const base = 0.55 + rng() * 0.3 + (state === 'TILT' ? 0.1 : 0);
   return {
     text: pool[Math.floor(rng() * pool.length)],
     type: 'TRUE',
     tags: [family],
-    strength: critical ? Math.max(strength, read.criticalStrength) : strength,
-    critical,
+    strength: clamp(base, 0, 0.95),
   };
 }
 
-/** 碎片闪现时长（毫秒）：EXECUTION ×0.6 = 显示更快。 */
-export function flashMs(state, balance, execution) {
-  const base = balance.read.flashMs?.[state] ?? 1000;
-  return Math.round(base * (execution ? (balance.read.executionFlashScale ?? 0.6) : 1));
+/** 碎片闪现时长（毫秒）。GOTCHA 自动泄漏由调用方乘 `gotcha.flashScale`。 */
+export function flashMs(state, balance) {
+  return balance.read.flashMs?.[state] ?? 1000;
 }

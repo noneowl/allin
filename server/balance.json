@@ -1,67 +1,93 @@
 {
   "comment": "《ALL IN》v3 全部可调数值。不对称筹码 1:10 开局，盲注按手数升级；情绪三状态单向 CALM→SHAKEN→TILT；READ 碎片（TRUE/NOISE/DISTORTION）→ 证据链 CRACK → GOTCHA（BLUFF/STRONG）→ EXECUTION / COUNTER。",
-
-  "stacks": { "player": 500, "boss": 5000 },
+  "stacks": {
+    "player": 500,
+    "boss": 5000
+  },
   "blindSchedule": [
-    { "firstHand": 1, "lastHand": 2, "sb": 10, "bb": 20 },
-    { "firstHand": 3, "lastHand": 4, "sb": 20, "bb": 40 },
-    { "firstHand": 5, "lastHand": 6, "sb": 40, "bb": 80 },
-    { "firstHand": 7, "lastHand": 8, "sb": 80, "bb": 160 },
-    { "firstHand": 9, "lastHand": 10, "sb": 120, "bb": 240 },
-    { "firstHand": 11, "lastHand": 9999, "sb": 160, "bb": 320 }
+    {
+      "firstHand": 1,
+      "lastHand": 2,
+      "sb": 10,
+      "bb": 20
+    },
+    {
+      "firstHand": 3,
+      "lastHand": 4,
+      "sb": 20,
+      "bb": 40
+    },
+    {
+      "firstHand": 5,
+      "lastHand": 6,
+      "sb": 40,
+      "bb": 80
+    },
+    {
+      "firstHand": 7,
+      "lastHand": 8,
+      "sb": 80,
+      "bb": 160
+    },
+    {
+      "firstHand": 9,
+      "lastHand": 10,
+      "sb": 120,
+      "bb": 240
+    },
+    {
+      "firstHand": 11,
+      "lastHand": 9999,
+      "sb": 160,
+      "bb": 320
+    }
   ],
-
   "read": {
     "cooldownMs": 400,
     "burstChanceInExecution": 0.25,
-    "flashMs": { "CALM": 1400, "SHAKEN": 1100, "TILT": 800 },
+    "flashMs": {
+      "CALM": 1400,
+      "SHAKEN": 1100,
+      "TILT": 800
+    },
     "executionFlashScale": 0.6,
     "mix": {
-      "CALM":   { "TRUE": 0.25, "NOISE": 0.5, "DISTORTION": 0.25 },
-      "SHAKEN": { "TRUE": 0.45, "NOISE": 0.2, "DISTORTION": 0.35 },
-      "TILT":   { "TRUE": 0.5,  "NOISE": 0.1, "DISTORTION": 0.4 }
-    },
-    "criticalChance": 0.07,
-    "criticalStrength": 0.85
+      "CALM": {
+        "TRUE": 0.25,
+        "NOISE": 0.5,
+        "DISTORTION": 0.25
+      },
+      "SHAKEN": {
+        "TRUE": 0.45,
+        "NOISE": 0.2,
+        "DISTORTION": 0.35
+      },
+      "TILT": {
+        "TRUE": 0.5,
+        "NOISE": 0.1,
+        "DISTORTION": 0.4
+      }
+    }
   },
-
-  "cracks": {
-    "comment": "证据链规则（all-of）：自上次 Boss 重要行动以来累计的 TRUE 标签命中任一规则即 CRACK；CRITICAL 为单条高强度碎片直爆。",
-    "rules": [
-      { "kind": "WEAKNESS", "need": ["wants_fold", "weak_hand"] },
-      { "kind": "WEAKNESS", "need": ["wants_fold", "fear_call"] },
-      { "kind": "WEAKNESS", "need": ["wants_fold", "missed_board"] },
-      { "kind": "WEAKNESS", "need": ["wants_fold", "draw"] },
-      { "kind": "WEAKNESS", "need": ["fear_call", "weak_hand"] },
-      { "kind": "WEAKNESS", "need": ["missed_board", "weak_hand"] },
-      { "kind": "STRENGTH", "need": ["strong_hand", "trap"] },
-      { "kind": "STRENGTH", "need": ["strong_hand", "call_welcome"] },
-      { "kind": "STRENGTH", "need": ["trap", "call_welcome"] },
-      { "kind": "STRENGTH", "need": ["strong_hand", "board_lock"] }
-    ]
-  },
-
   "gotcha": {
-    "streakForTilt": 2
+    "comment": "负债高风险状态：trueRateByDepth[depth-1] 为自动泄漏的 TRUE 概率（4+ 取末位）；越深越真",
+    "trueRateByDepth": [
+      0.45,
+      0.55,
+      0.65,
+      0.75
+    ],
+    "raiseStepDoubles": true,
+    "flashScale": 0.6
   },
-
   "counter": {
-    "comment": "GOTCHA 判断错误 / BUSTED 后，Boss 本手内的攻击强度提升（COUNTER 高压阶段）",
+    "comment": "BUSTED 专属技后 Boss 本手的攻击增益（phaseBuff；v4 起不再切换 mode）",
     "aggression": 0.35,
     "betSize": 0.3,
     "bluff": 0.2,
     "risk": 0.15,
     "variance": 0.1
   },
-
-  "busted": {
-    "confidence": 0.7,
-    "chance": 0.12,
-    "minHand": 3,
-    "cooldownHands": 4,
-    "line": "我看穿你了 —— 全部下注！"
-  },
-
   "personality": {
     "id": "deceiver",
     "name": "千面",
@@ -76,34 +102,97 @@
     "trapChance": 0.2,
     "stability": 0.5
   },
-
   "emotions": {
     "CALM": {
-      "bluff": 0.0, "raiseFreq": 0.0, "betSize": 0.0, "aggression": 0.0,
-      "foldThreshold": 0.0, "callThreshold": 0.0, "risk": 0.0, "variance": 0.15,
-      "trapChance": 0.0, "hint": "冷静克制 · 碎片泄漏少、噪音多 —— 多读几条再下判断"
+      "bluff": 0.0,
+      "raiseFreq": 0.0,
+      "betSize": 0.0,
+      "aggression": 0.0,
+      "foldThreshold": 0.0,
+      "callThreshold": 0.0,
+      "risk": 0.0,
+      "variance": 0.15,
+      "trapChance": 0.0,
+      "hint": "冷静克制 · 碎片泄漏少、噪音多 —— 多读几条再下判断"
     },
     "SHAKEN": {
-      "bluff": 0.12, "raiseFreq": 0.08, "betSize": 0.1, "aggression": 0.12,
-      "foldThreshold": -0.03, "callThreshold": -0.04, "risk": 0.08, "variance": 0.28,
-      "trapChance": 0.05, "hint": "动摇 · 真实意图开始泄漏，碎片里真话变多"
+      "bluff": 0.12,
+      "raiseFreq": 0.08,
+      "betSize": 0.1,
+      "aggression": 0.12,
+      "foldThreshold": -0.03,
+      "callThreshold": -0.04,
+      "risk": 0.08,
+      "variance": 0.28,
+      "trapChance": 0.05,
+      "hint": "动摇 · 真实意图开始泄漏，碎片里真话变多"
     },
     "TILT": {
-      "bluff": 0.28, "raiseFreq": 0.22, "betSize": 0.3, "aggression": 0.32,
-      "foldThreshold": -0.08, "callThreshold": -0.08, "risk": 0.28, "variance": 0.45,
-      "trapChance": 0.05, "hint": "上头 · 真话密集、同时满嘴错觉 —— 最容易读，也最容易骗到你"
+      "bluff": 0.28,
+      "raiseFreq": 0.22,
+      "betSize": 0.3,
+      "aggression": 0.32,
+      "foldThreshold": -0.08,
+      "callThreshold": -0.08,
+      "risk": 0.28,
+      "variance": 0.45,
+      "trapChance": 0.05,
+      "hint": "上头 · 真话密集、同时满嘴错觉 —— 最容易读，也最容易骗到你"
     }
   },
-
   "transitions": {
-    "comment": "v3 三状态单向：CALM→SHAKEN→TILT。胜负筹码不直接改情绪；GOTCHA 与被看穿类事件是主推手。",
-    "BLUFF_CAUGHT":   { "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 0.3] },
-    "GOTCHA_HIT":     { "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 0.45] },
-    "GOTCHA_STREAK":  { "CALM": ["SHAKEN", 0.8], "SHAKEN": ["TILT", 1.0] },
-    "BIG_POT_LOST":   { "CALM": ["SHAKEN", 0.7], "SHAKEN": ["TILT", 0.7] },
-    "ALL_IN_LOST":    { "CALM": ["SHAKEN", 0.9], "SHAKEN": ["TILT", 1.0] }
+    "comment": "v4：GOTCHA_HIT=玩家进入GOTCHA；GOTCHA_STREAK=连续两手进入GOTCHA。BLUFF_CAUGHT/输大池照旧。单向 CALM→SHAKEN→TILT。",
+    "BLUFF_CAUGHT": {
+      "CALM": [
+        "SHAKEN",
+        1.0
+      ],
+      "SHAKEN": [
+        "TILT",
+        0.3
+      ]
+    },
+    "GOTCHA_HIT": {
+      "CALM": [
+        "SHAKEN",
+        1.0
+      ],
+      "SHAKEN": [
+        "TILT",
+        0.45
+      ]
+    },
+    "GOTCHA_STREAK": {
+      "CALM": [
+        "SHAKEN",
+        0.8
+      ],
+      "SHAKEN": [
+        "TILT",
+        1.0
+      ]
+    },
+    "BIG_POT_LOST": {
+      "CALM": [
+        "SHAKEN",
+        0.7
+      ],
+      "SHAKEN": [
+        "TILT",
+        0.7
+      ]
+    },
+    "ALL_IN_LOST": {
+      "CALM": [
+        "SHAKEN",
+        0.9
+      ],
+      "SHAKEN": [
+        "TILT",
+        1.0
+      ]
+    }
   },
-
   "sizing": {
     "valueLine": 0.6,
     "bluffLine": 0.42,
@@ -115,9 +204,197 @@
     "pressureFrac": 0.5,
     "heavyFrac": 1.0
   },
-
   "bigPotLostRatio": 0.2,
   "winQuipChance": 0.45,
-
-  "rng": { "seed": null }
+  "rng": {
+    "seed": null
+  },
+  "readUsesPerHand": 2,
+  "normalReadFragmentCount": {
+    "min": 3,
+    "max": 5
+  },
+  "gotchaReadFragmentCount": {
+    "min": 4,
+    "max": 6
+  },
+  "pinSlots": 1,
+  "cracksForGotcha": 2,
+  "psychologyActionRules": [
+    {
+      "id": "call_vs_wants_fold",
+      "tag": "wants_fold",
+      "actions": [
+        "call"
+      ],
+      "truthIntents": [
+        "BLUFF",
+        "PROBE"
+      ],
+      "kind": "WEAKNESS",
+      "why": "他想让你弃，你却跟了 —— 读对了"
+    },
+    {
+      "id": "call_vs_fear_call",
+      "tag": "fear_call",
+      "actions": [
+        "call"
+      ],
+      "truthIntents": [
+        "BLUFF",
+        "PROBE"
+      ],
+      "kind": "WEAKNESS",
+      "why": "他怕你跟，你偏跟 —— 戳中脆弱"
+    },
+    {
+      "id": "raise_vs_fear_raise",
+      "tag": "fear_raise",
+      "actions": [
+        "pressure",
+        "heavy",
+        "raise",
+        "bet",
+        "allin"
+      ],
+      "truthIntents": [
+        "BLUFF",
+        "PROBE"
+      ],
+      "kind": "WEAKNESS",
+      "why": "他怕你加注，你真加了 —— 正中下怀的是你"
+    },
+    {
+      "id": "agg_vs_weak_hand",
+      "tag": "weak_hand",
+      "actions": [
+        "pressure",
+        "heavy",
+        "raise",
+        "bet",
+        "allin"
+      ],
+      "truthIntents": [
+        "BLUFF",
+        "PROBE"
+      ],
+      "kind": "WEAKNESS",
+      "why": "他手里是空的，你压上去了"
+    },
+    {
+      "id": "agg_vs_missed_board",
+      "tag": "missed_board",
+      "actions": [
+        "pressure",
+        "heavy",
+        "raise",
+        "bet",
+        "allin"
+      ],
+      "truthIntents": [
+        "BLUFF",
+        "PROBE"
+      ],
+      "kind": "WEAKNESS",
+      "why": "牌面没帮到他，你开火了"
+    },
+    {
+      "id": "agg_vs_draw",
+      "tag": "draw",
+      "actions": [
+        "pressure",
+        "heavy",
+        "raise",
+        "bet",
+        "allin"
+      ],
+      "truthIntents": [
+        "BLUFF",
+        "PROBE"
+      ],
+      "kind": "WEAKNESS",
+      "why": "他还差一张，你没给他机会"
+    },
+    {
+      "id": "check_vs_trap",
+      "tag": "trap",
+      "actions": [
+        "check"
+      ],
+      "truthIntents": [
+        "VALUE",
+        "TRAP",
+        "CONTROL"
+      ],
+      "kind": "STRENGTH",
+      "why": "他在设套，你没有走进去"
+    },
+    {
+      "id": "retreat_vs_welcome",
+      "tag": "call_welcome",
+      "actions": [
+        "fold",
+        "check"
+      ],
+      "truthIntents": [
+        "VALUE",
+        "TRAP",
+        "CONTROL"
+      ],
+      "kind": "STRENGTH",
+      "why": "他盼着你进来，你退出了"
+    },
+    {
+      "id": "retreat_vs_strong",
+      "tag": "strong_hand",
+      "actions": [
+        "fold",
+        "check"
+      ],
+      "truthIntents": [
+        "VALUE",
+        "TRAP",
+        "CONTROL"
+      ],
+      "kind": "STRENGTH",
+      "why": "他真的有货，你没送"
+    },
+    {
+      "id": "retreat_vs_lock",
+      "tag": "board_lock",
+      "actions": [
+        "fold",
+        "check"
+      ],
+      "truthIntents": [
+        "VALUE",
+        "TRAP",
+        "CONTROL"
+      ],
+      "kind": "STRENGTH",
+      "why": "牌面被他锁死，你及时收手"
+    },
+    {
+      "id": "retreat_vs_confidence",
+      "tag": "overconfidence",
+      "actions": [
+        "fold",
+        "check"
+      ],
+      "truthIntents": [
+        "VALUE",
+        "TRAP",
+        "CONTROL"
+      ],
+      "kind": "STRENGTH",
+      "why": "他确实占优，你没有硬碰"
+    }
+  ],
+  "busted": {
+    "confidence": 0.7,
+    "chance": 0.12,
+    "minHand": 3,
+    "cooldownHands": 4,
+    "line": "我看穿你了 —— 全部下注！"
+  }
 }

@@ -8,7 +8,7 @@ import { Boss } from '../server/boss/boss.js';
 import { Emotion, STATES, SCALE, ORDER, isDownEvent, FACES, MOODS, EVENT_NAMES } from '../server/boss/mental.js';
 import { TALK, pickLine, pickWinQuip, WIN_QUIP } from '../server/boss/talk.js';
 import { makeFragment, flashMs, TRUE_FAMILIES, NOISE_POOL, DISTORTION_POOL } from '../server/boss/fragments.js';
-import { EvidenceTracker } from '../server/boss/crack.js';
+import { matchCrackRule, buildCrack } from '../server/boss/crack-rules.js';
 import { PlayerModel } from '../server/boss/playermodel.js';
 import { loadBalance } from '../server/battle.js';
 import { seededRng } from '../server/engine/cards.js';
@@ -101,7 +101,6 @@ test('只有 TRUE 带标签；类型与标签绝不为 NOISE/DISTORTION 所带',
       assert.ok(f.strength > 0.4);
     } else {
       assert.deepEqual(f.tags, [], `${f.type} 不能带标签`);
-      assert.equal(f.critical, false, '非 TRUE 不可能 Critical');
     }
     assert.ok(typeof f.text === 'string' && f.text.length > 0);
   }
@@ -109,7 +108,7 @@ test('只有 TRUE 带标签；类型与标签绝不为 NOISE/DISTORTION 所带',
 
 test('TRUE 碎片由 Boss 真实处境决定：BLUFF 意图漏弱点，VALUE 意图漏强牌', () => {
   const r = seededRng(13);
-  const weakTags = new Set(['wants_fold', 'fear_call', 'weak_hand', 'missed_board', 'draw']);
+  const weakTags = new Set(['wants_fold', 'fear_call', 'fear_raise', 'weak_hand', 'missed_board', 'draw']);
   const strongTags = new Set(['strong_hand', 'call_welcome', 'trap', 'board_lock', 'overconfidence']);
   for (let i = 0; i < 200; i++) {
     const bluff = makeFragment(fragCtx({ state: 'SHAKEN', intent: 'BLUFF', rng: () => r.next() }));
@@ -124,50 +123,67 @@ test('TRUE 碎片由 Boss 真实处境决定：BLUFF 意图漏弱点，VALUE 意
   }
 });
 
-test('Critical：单条高强度真话，EXECUTION 显示更快', () => {
-  let criticals = 0;
-  const r = seededRng(17);
-  for (let i = 0; i < 400; i++) {
-    const f = makeFragment(fragCtx({ state: 'TILT', intent: 'BLUFF', execution: true, rng: () => r.next() }));
-    if (f.critical) {
-      criticals += 1;
-      assert.equal(f.type, 'TRUE');
-      assert.ok(f.strength >= balance.read.criticalStrength, 'Critical 必须是高强度');
-    }
+test('trueRate 覆盖与 fear_raise 家族（GOTCHA 泄漏与 §五规则所需）', () => {
+  // trueRate=0 → 绝不 TRUE；trueRate=1 → 必 TRUE（有 intent 时）
+  const r = rngOf(19); // 直接作为 rng 函数复用（rngOf 返回函数）
+  for (let i = 0; i < 60; i++) {
+    const f = makeFragment(fragCtx({ state: 'TILT', intent: 'BLUFF', trueRate: 0, rng: r }));
+    assert.notEqual(f.type, 'TRUE');
   }
-  assert.ok(criticals > 0, 'TILT 高强度池里应当能出 Critical');
-
-  assert.equal(flashMs('TILT', balance, false), balance.read.flashMs.TILT);
-  assert.equal(flashMs('TILT', balance, true), Math.round(balance.read.flashMs.TILT * balance.read.executionFlashScale));
+  for (let i = 0; i < 60; i++) {
+    const f = makeFragment(fragCtx({ state: 'TILT', intent: 'BLUFF', trueRate: 1, rng: r }));
+    assert.equal(f.type, 'TRUE');
+  }
+  assert.ok(TRUE_FAMILIES.fear_raise?.length > 0, '存在 fear_raise 家族（他怕你加注）');
+  // BLUFF 意图可能抽到 fear_raise
+  let saw = false;
+  for (let i = 0; i < 200 && !saw; i++) {
+    const f = makeFragment(fragCtx({ state: 'SHAKEN', intent: 'BLUFF', rng: r }));
+    if (f.type === 'TRUE' && f.tags[0] === 'fear_raise') saw = true;
+  }
+  assert.ok(saw, 'BLUFF 家族池含 fear_raise');
+  assert.equal(flashMs('TILT', balance), balance.read.flashMs.TILT);
   assert.ok(NOISE_POOL.length > 0 && Object.keys(DISTORTION_POOL).length === 3);
 });
 
-// ============================================================ CRACK 证据链
+// ============================================================ CRACK 规则（情报×行动）
 
-test('CRACK：两枚相关标签成链，链成即清空，Critical 单条直爆', () => {
-  const tracker = new EvidenceTracker(balance.cracks);
-  assert.equal(tracker.add({ type: 'NOISE', tags: [], strength: 0, critical: false }, 1), null);
+test('CRACK 规则匹配：只认 TRUE、行动与真值域都必须命中', () => {
+  const RULES = balance.psychologyActionRules;
+  assert.ok(RULES.length >= 8, '规则表已配置');
+  const wantFold = RULES.find((r) => r.tag === 'wants_fold');
+  assert.ok(wantFold, '存在 wants_fold 规则');
+  assert.ok(wantFold.actions.includes('call'), '他想让你弃 → 你跟 = CRACK');
+  assert.ok(wantFold.truthIntents.includes('BLUFF'), '真值域：他在诈唬时才成立');
 
-  const t1 = tracker.add({ type: 'TRUE', tags: ['wants_fold'], strength: 0.7, critical: false }, 1);
-  assert.equal(t1, null, '一枚标签还不够');
-  const t2 = tracker.add({ type: 'TRUE', tags: ['weak_hand'], strength: 0.6, critical: false }, 1);
-  assert.ok(t2, '两枚相关标签 → CRACK');
-  assert.equal(t2.kind, 'WEAKNESS');
-  assert.deepEqual(t2.evidence.sort(), ['wants_fold', 'weak_hand']);
-  assert.deepEqual(tracker.snapshot(), [], '链条兑现后清空');
+  const pinTrue = { type: 'TRUE', tags: ['wants_fold'] };
+  // 条件齐备 → 命中
+  const hit = matchCrackRule(balance, pinTrue, 'call', 'BLUFF');
+  assert.ok(hit && hit.id === wantFold.id);
+  // NOISE / DISTORTION 永不匹配
+  assert.equal(matchCrackRule(balance, { type: 'NOISE', tags: [] }, 'call', 'BLUFF'), null);
+  assert.equal(matchCrackRule(balance, { type: 'DISTORTION', tags: [] }, 'call', 'BLUFF'), null);
+  // 行动不符
+  assert.equal(matchCrackRule(balance, pinTrue, 'fold', 'BLUFF'), null, '弃牌不满足 call 规则');
+  // 真值不符（Boss 当前在做价值 → 旧的弱点情报失效）
+  assert.equal(matchCrackRule(balance, pinTrue, 'call', 'VALUE'), null, '真值域不符不 CRACK');
+  // 无 intent
+  assert.equal(matchCrackRule(balance, pinTrue, 'call', null), null);
 
-  // 强牌链
-  const tracker2 = new EvidenceTracker(balance.cracks);
-  tracker2.add({ type: 'TRUE', tags: ['strong_hand'], strength: 0.7, critical: false }, 2);
-  const s = tracker2.add({ type: 'TRUE', tags: ['trap'], strength: 0.8, critical: false }, 2);
-  assert.equal(s.kind, 'STRENGTH');
+  // 强侧规则：trap + check
+  const pinTrap = { type: 'TRUE', tags: ['trap'] };
+  const trapRule = matchCrackRule(balance, pinTrap, 'check', 'TRAP');
+  assert.ok(trapRule && trapRule.kind === 'STRENGTH');
+  assert.equal(matchCrackRule(balance, pinTrap, 'check', 'BLUFF'), null, '强侧情报在诈唬 intent 下不成立');
 
-  // Critical Tell：单条直接成链
-  const tracker3 = new EvidenceTracker(balance.cracks);
-  const c = tracker3.add({ type: 'TRUE', tags: ['wants_fold'], strength: 0.9, critical: true }, 3);
-  assert.ok(c);
-  assert.equal(c.kind, 'CRITICAL');
-  assert.equal(c.critical, true);
+  // buildCrack 形状
+  const crack = buildCrack(wantFold, pinTrue, 'call', 7, 5);
+  assert.equal(crack.id, 5);
+  assert.equal(crack.kind, 'WEAKNESS');
+  assert.deepEqual(crack.evidence, ['wants_fold']);
+  assert.equal(crack.action, 'call');
+  assert.equal(crack.handNo, 7);
+  assert.equal(crack.critical, false);
 });
 
 // ============================================================ 三层决策

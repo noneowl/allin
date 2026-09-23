@@ -258,3 +258,83 @@ test('事件顺序：盲注 → 行动 → 公共牌 → 摊牌', () => {
   const streets = all.filter((e) => e.type === 'street').map((e) => e.street);
   assert.deepEqual(streets, ['flop', 'turn', 'river']);
 });
+
+// ================================================ 负债模式（GOTCHA，方案 §八/§十三）
+
+test('负债模式：解除加注上限、不产生 all-in、可为负、双方守恒', () => {
+  const d = makeDuel();
+  d.startHand();
+  d.debtMode = true; // 双方同时解除上限（方案 §八）
+
+  const legal = d.legal(0);
+  assert.ok(!legal.some((o) => o.type === 'allin'), '负债模式没有 all-in 选项');
+  const raise = legal.find((o) => o.type === 'raise') ?? legal.find((o) => o.type === 'bet');
+  assert.ok(raise, '仍有加注选项');
+  assert.equal(raise.maxTo, Infinity, '上限解除');
+
+  d.act(0, { action: 'raise', amount: 1500 }); // 玩家远超自身500
+  assert.ok(d.stacks[0] < 0, `stack 可为负（${d.stacks[0]}）`);
+  assert.equal(d.allIn[0], false, '不产生 all-in 语义');
+  assert.equal(d.phase, 'playing', '不触发 runout');
+  assert.equal(held(d), 2000, '负债期间筹码+投入守恒');
+
+  // Boss 也解除上限：超出自身可动用部分继续加注
+  d.act(1, { action: 'raise', amount: 3000 });
+  assert.equal(held(d), 2000, '双方都可越界但总量不变');
+});
+
+test('负债模式：跟注不受剩余筹码限制；结算后总量守恒', () => {
+  const d = makeDuel({ stacks: [40, 5000] });
+  d.startHand();
+  d.debtMode = true;
+  // 回合顺序：玩家（button/SB）先动
+  d.act(0, { action: 'raise', amount: 60 });   // put50 → stack -10
+  assert.ok(d.stacks[0] < 0, '先越界');
+  d.act(1, { action: 'raise', amount: 400 });  // Boss 反加
+  const call = d.legal(0).find((o) => o.type === 'call');
+  assert.ok(call, '有跟注选项');
+  assert.equal(call.amount, 400 - d.committed[0], '跟注额 = 差额（不受剩余筹码限制）');
+  const heldBefore = held(d);
+  d.act(0, { action: 'call' });
+  assert.ok(d.stacks[0] < 0, `跟到负数（${d.stacks[0]}）`);
+  assert.equal(held(d), heldBefore, '行动中守恒');
+  // 打到结算（自动 runout → 摊牌）
+  let guard = 0;
+  while (d.phase === 'playing' && guard++ < 40) d.act(d.toAct, { action: 'check' });
+  assert.equal(d.phase, 'handover');
+  assert.equal(held(d), 40 + 5000, '结算后总量守恒（与开战一致）');
+});
+
+test('负数筹码守卫：未结算的负数禁止进入下一手；正常复位 debtMode', () => {
+  // 守卫：直接带着负数筹码开新手牌 → 拒绝
+  const d = makeDuel();
+  d.startHand();
+  d.stacks[0] = -5;
+  assert.throws(() => d.startHand(), (e) => e.code === 'NEGATIVE_STACK', '负数不入普通阶段');
+
+  // 正常路径：弃牌结算（与牌面无关）后筹码非负 → 可开下一手，且 debtMode 已复位
+  const d2 = makeDuel({ stacks: [200, 5000] });
+  d2.startHand();
+  d2.debtMode = true;
+  d2.act(0, { action: 'raise', amount: 180 });  // 越界（200 里的 180 = put170+sb…实际 put170 → stack20）
+  d2.act(1, { action: 'fold' });                 // Boss 弃牌 → 玩家赢，退款后非负
+  assert.equal(d2.phase, 'handover');
+  assert.ok(d2.stacks[0] >= 0, `弃牌获胜后非负（${d2.stacks[0]}）`);
+  d2.startHand();
+  assert.equal(d2.debtMode, false, 'debtMode 已复位');
+  assert.ok(d2.stacks[0] >= 0 && d2.stacks[1] >= 0);
+  assert.equal(held(d2), 200 + 5000, '总量守恒');
+});
+
+test('普通模式行为不变（回归）：夹取而非抛错、all-in 照旧', () => {
+  const d = makeDuel();
+  d.startHand();
+  const legal = d.legal(0);
+  assert.ok(legal.some((o) => o.type === 'allin'), '普通模式有 all-in');
+  const raise = legal.find((o) => o.type === 'raise');
+  assert.ok(raise.maxTo <= 1000, '普通模式受 Stack 上限');
+  // 超限金额被夹到 maxTo（引擎历史行为：夹取不抛错）→ 变成全下
+  d.act(0, { action: 'raise', amount: 2000 });
+  assert.equal(d.stacks[0], 0, '超限金额夹到筹码上限');
+  assert.equal(d.allIn[0], true, '普通模式顶格即 all-in');
+});

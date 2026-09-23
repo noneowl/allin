@@ -20,7 +20,7 @@ import { Duel, GameError } from './engine/duel.js';
 import { makeDeck, shuffle } from './engine/cards.js';
 import { evaluate } from './engine/evaluator.js';
 import { Boss } from './boss/boss.js';
-import { EvidenceTracker } from './boss/crack.js';
+import { matchCrackRule, buildCrack } from './boss/crack-rules.js';
 import { makeFragment, flashMs } from './boss/fragments.js';
 import { PlayerModel } from './boss/playermodel.js';
 import { FINAL_HEART, DEFEAT_LINE } from './boss/talk.js';
@@ -38,12 +38,19 @@ export function loadBalance(path = BALANCE_PATH) {
 }
 
 const IMPORTANT = new Set(['bet', 'raise', 'allin', 'pressure', 'heavy']);
+/** GOTCHA 里的阶梯加注 / 自动泄漏相关动作集合。 */
+const GOTCHA_OK = new Set(['fold', 'call', 'check', 'raise', 'bet']);
+const NORMAL_OK = new Set(['fold', 'call', 'check', 'pressure', 'heavy', 'allin']);
+/** 自动泄漏触发：任意一方完成 CALL / RAISE（v4 契约 §十）。 */
+const LEAK_TRIGGERS = new Set(['call', 'raise']);
+void IMPORTANT;
 
 function emptyLegal() {
   return {
     check: false, call: null, fold: false,
     pressure: false, heavy: false, pressureTo: 0, heavyTo: 0,
     bet: false, raise: false, minTo: 0, maxTo: 0, allin: 0,
+    gotchaRaiseTo: null,
   };
 }
 
@@ -53,8 +60,8 @@ function mapLegal(list) {
     if (o.type === 'check') out.check = true;
     else if (o.type === 'call') out.call = o.amount;
     else if (o.type === 'fold') out.fold = true;
-    else if (o.type === 'bet') { out.bet = true; out.minTo = o.minTo; out.maxTo = o.maxTo; }
-    else if (o.type === 'raise') { out.raise = true; out.minTo = o.minTo; out.maxTo = o.maxTo; }
+    else if (o.type === 'bet') { out.bet = true; out.minTo = o.minTo; out.maxTo = Number.isFinite(o.maxTo) ? o.maxTo : Number.MAX_SAFE_INTEGER; }
+    else if (o.type === 'raise') { out.raise = true; out.minTo = o.minTo; out.maxTo = Number.isFinite(o.maxTo) ? o.maxTo : Number.MAX_SAFE_INTEGER; }
     else if (o.type === 'allin') out.allin = o.to;
   }
   return out;
@@ -82,15 +89,23 @@ export class Battle {
   _freshFields() {
     this.phase = 'playing'; // playing | victory | defeat
     this.handNo = 0;
-    this.mode = 'NORMAL'; // NORMAL | EXECUTION | COUNTER（每手重置）
+    this.mode = 'NORMAL'; // NORMAL | GOTCHA（每手重置；EXECUTION/COUNTER 已废弃）
     this.history = [];
     this.feed = [];
-    this.readFragments = []; // [{ text, atHand }] 最新在前
-    this.cracks = [];        // 本手已形成的证据链
-    this.crack = null;       // 最近一个未使用的 CRACK（GOTCHA 的对象）
-    this.gotchaStreak = 0;   // 连续正确 GOTCHA（跨手累计，答错清零）
-    this.evidence = new EvidenceTracker(this.balance.cracks);
+    this.readFragments = []; // [{ id|null, text, atHand }] 最新在前
+    this.cracks = [];        // 本手已验证成功的「情报×行动」CRACK
+    this.crackSeq = 0;
+    // ---- READ 资源与 PIN（v4）----
+    this.readsLeft = this.balance.readUsesPerHand ?? 2;
     this.readCooldownUntil = 0;
+    this.fragmentSeq = 0;
+    this.handFragments = new Map(); // 本手手工 READ 的碎片元数据（id → meta，服务端私有）
+    this.pinned = null;             // 唯一保留位（字段不叫 pin：会遮蔽方法 pin()）：{ fragmentId, text, type, tags, sourceAction, handId, verified }
+    // ---- GOTCHA 负债状态 ----
+    this.gotchaDepth = 0;           // 自动泄漏深度（TRUE 比例随深度上升）
+    this.gotchaRaiseStep = 0;       // 玩家阶梯加注步长
+    this.enteredGotchaThisHand = false;
+    this.enteredGotchaPrevHand = false;
     this.lastBossAction = null;
     this.lastLine = null;
     this.lastPlayerAction = null;
@@ -140,12 +155,22 @@ export class Battle {
     this.duel.smallBlind = blind.sb;
     this.duel.bigBlind = blind.bb;
 
-    // 手牌级重置：模式、证据、CRACK、GOTCHA、本手增益
+    // 手牌级重置：模式、负债、PIN、碎片、CRACK、READ 资源、本手增益
+    // ★ 负债绝不跨手：mode/debtMode 双重复位（startHand 内部也会关 debtMode）
     this.mode = 'NORMAL';
+    this.duel.debtMode = false;
     this.boss.resetHand();
-    this.evidence.reset();
     this.cracks = [];
-    this.crack = null;
+    this.crackSeq = 0;
+    this.readsLeft = this.balance.readUsesPerHand ?? 2;
+    this.readCooldownUntil = 0;
+    this.fragmentSeq = 0;
+    this.handFragments.clear();
+    this.pinned = null;
+    this.gotchaDepth = 0;
+    this.gotchaRaiseStep = 0;
+    this.enteredGotchaPrevHand = this.enteredGotchaThisHand;
+    this.enteredGotchaThisHand = false;
     this.handAggressiveIntents = [];
     this.playerAggressive = false;
     this.lastBossAction = null;
@@ -190,7 +215,7 @@ export class Battle {
     return t;
   }
 
-  /** BUSTED!：模型把握度足够 + 冷却完毕 + 运气 → Boss 专属技（进入 COUNTER）。 */
+  /** BUSTED!：模型把握度足够 + 冷却完毕 + 运气 → Boss 专属技（本手攻击增益；v4 不再切 mode）。 */
   #maybeBusted(events) {
     if (this.mode !== 'NORMAL') return false;
     const conf = this.balance.busted;
@@ -201,12 +226,9 @@ export class Battle {
 
     this.lastBustedHand = this.handNo;
     this.model.lastBustedAtHand = this.handNo;
-    this.mode = 'COUNTER';
     this.boss.setPhaseBuff({ ...this.balance.counter });
     events.push({ type: 'busted', line: conf.line });
-    events.push({ type: 'mode', mode: 'COUNTER' });
-    this.#feed('model', `BUSTED! · ${conf.line}`);
-    this.#feed('mode', 'Boss 主导的高压阶段开始（COUNTER）');
+    this.#feed('model', `BUSTED! · ${conf.line}（本手他全面提高攻击性）`);
     return true;
   }
 
@@ -245,14 +267,13 @@ export class Battle {
         this.handAggressiveIntents.push({ action: normalized.type, intent: decision.intent, street: preStreet });
       }
 
-      // 重要行动 → 旧证据与待兑现的 CRACK 过期（意图已经换了）
-      // 面板历史（view.cracks）保留：未兑现的 result 为 null 即表示已过期
-      if (IMPORTANT.has(normalized.type)) {
-        this.evidence.reset();
-        this.crack = null;
+      // GOTCHA：完整加注 → 玩家阶梯翻倍；CALL/RAISE → 自动心理泄漏
+      if (this.mode === 'GOTCHA') {
+        if (normalized.type === 'raise') this.#bumpRaiseStep();
+        this.#maybeAutoLeak(events, normalized.type);
       }
 
-      // 台词（v3：只承担人格与情绪的表达）
+      // 台词（v3/v4：只承担人格与情绪的表达）
       const talk = this.boss.talkFor({ action: normalized.type, street: preStreet });
       if (talk) {
         this.lastLine = talk.text;
@@ -373,6 +394,92 @@ export class Battle {
     return { type: aggro.type, to };
   }
 
+  // ------------------------------------------------------------ GOTCHA 阶梯与自动泄漏（v4）
+
+  /** GOTCHA 阶梯：玩家 RAISE 的 raise-to（currentBet=0 时即开注视额）。 */
+  #gotchaRaiseTo() {
+    const d = this.duel;
+    const list = d.legal(PLAYER);
+    const aggro = list.find((o) => o.type === 'bet') ?? list.find((o) => o.type === 'raise');
+    if (!aggro) return null;
+    const step = Math.max(this.gotchaRaiseStep, d.lastRaiseSize);
+    const target = d.currentBet + step;
+    return Math.max(aggro.minTo, Math.min(aggro.maxTo === Infinity ? Number.MAX_SAFE_INTEGER : aggro.maxTo, Math.round(target)));
+  }
+
+  #bumpRaiseStep() {
+    // 任意一方完整加注后步长翻倍：100 → 200 → 400 → 800 …（每一次继续风险肉眼翻倍）
+    this.gotchaRaiseStep = Math.min(Math.max(this.gotchaRaiseStep, 1) * 2, 1e15);
+  }
+
+  /** GOTCHA：任意一方 CALL/RAISE 自动触发心理泄漏；深度越高 TRUE 越多（§十/§十一）。 */
+  #maybeAutoLeak(events, actionType) {
+    if (this.mode !== 'GOTCHA' || !LEAK_TRIGGERS.has(actionType)) return;
+    this.gotchaDepth += 1;
+    const cfg = this.balance.gotcha ?? {};
+    const table = cfg.trueRateByDepth ?? [0.45, 0.55, 0.65, 0.75];
+    const trueRate = table[Math.min(this.gotchaDepth, table.length) - 1] ?? table[table.length - 1];
+    const range = this.balance.gotchaReadFragmentCount ?? { min: 3, max: 5 };
+    const hi = Math.max(range.min, range.max);
+    const count = range.min + Math.floor(this.rng() * (hi - range.min + 1));
+    const state = this.boss.state;
+    const fragments = [];
+    for (let i = 0; i < count; i++) {
+      const frag = makeFragment({
+        state,
+        intent: this.boss.currentIntent(),
+        equity: this.boss.lastEquity,
+        street: this.duel.street,
+        trueRate,
+        balance: this.balance,
+        rng: this.rng,
+      });
+      fragments.push({ id: null, text: frag.text }); // 自动泄漏不可 PIN
+      // type 仅供服务端/测试查验；view 侧显式映射会剥掉它
+      this.readFragments.unshift({ id: null, text: frag.text, atHand: this.handNo, type: frag.type });
+    }
+    if (this.readFragments.length > 30) this.readFragments.length = 30;
+    events.push({
+      type: 'read_batch',
+      source: 'gotcha',
+      depth: this.gotchaDepth,
+      flashMs: Math.max(420, Math.round(flashMs(state, this.balance) * (cfg.flashScale ?? 0.6))),
+      fragments,
+    });
+  }
+
+  /**
+   * ★ 新 CRACK（方案 §四-六）：PIN 的真实情报 × 玩家行动 × Boss 当前 intent。
+   * NOISE / DISTORTION 没有标签 → 天然不产生 CRACK；Boss 再次进攻换 intent → 旧情报失效。
+   */
+  #validatePinCrack(events, actionLabel) {
+    const pin = this.pinned;
+    if (!pin || pin.verified || pin.type !== 'TRUE') return;
+    const intent = this.boss.currentIntent();
+    if (!intent) return;
+    const rule = matchCrackRule(this.balance, pin, actionLabel, intent);
+    if (!rule) return;
+
+    pin.verified = true;
+    const crack = buildCrack(rule, pin, actionLabel, this.handNo, ++this.crackSeq);
+    this.cracks.push({ ...crack, result: null });
+    events.push({
+      type: 'crack',
+      id: crack.id,
+      kind: crack.kind,
+      evidence: crack.evidence,
+      action: crack.action,
+      strength: crack.strength,
+      critical: crack.critical,
+      handNo: crack.handNo,
+    });
+    this.#feed('crack', `CRACK! [${crack.kind}] ${crack.evidence.join(' + ')} × ${actionLabel} —— ${crack.why}`);
+    const need = this.balance.cracksForGotcha ?? 2;
+    if (this.cracks.length === need) {
+      this.#feed('gotcha', `GOTCHA 解锁！（${this.cracks.length}/${need} 个 CRACK）`);
+    }
+  }
+
   act(action, amount) {
     this.#requirePlayerTurn();
     const events = [];
@@ -380,23 +487,35 @@ export class Battle {
     const preStreet = d.street;
     const label = String(action ?? '').toLowerCase();
 
-    // ---- 预设行动 / 自由尺寸 / 引擎原生行动 ----
+    // ---- 模式门禁（v4）----
     let engineCmd;
     let displayAction = label;
-    if (label === 'pressure' || label === 'heavy') {
-      const frac = label === 'pressure'
-        ? (this.balance.sizing.pressureFrac ?? 0.5)
-        : (this.balance.sizing.heavyFrac ?? 1);
-      const preset = this.#presetTo(frac);
-      if (!preset) throw new GameError('当前无法施压（没有下注/加注选项）', 'CANNOT_PRESSURE');
-      engineCmd = { action: preset.type, amount: preset.to };
-    } else if (label === 'bet' || label === 'raise') {
-      if (this.mode !== 'EXECUTION') {
-        throw new GameError('自由下注仅在 EXECUTION 阶段开放', 'NOT_EXECUTION');
+    if (this.mode === 'GOTCHA') {
+      if (!GOTCHA_OK.has(label)) {
+        throw new GameError('GOTCHA 中只有 FOLD / CALL / CHECK / RAISE', 'GOTCHA_ACTIONS');
       }
-      engineCmd = { action: label, amount };
+      if (label === 'raise' || label === 'bet') {
+        const ladder = this.#gotchaRaiseTo();
+        if (ladder === null) throw new GameError('当前无法加注', 'CANNOT_RAISE');
+        engineCmd = { action: label, amount: Number.isFinite(Number(amount)) ? Number(amount) : ladder };
+      } else {
+        engineCmd = { action: label, amount };
+      }
     } else {
-      engineCmd = { action: label, amount };
+      if (label === 'pressure' || label === 'heavy') {
+        const frac = label === 'pressure'
+          ? (this.balance.sizing.pressureFrac ?? 0.5)
+          : (this.balance.sizing.heavyFrac ?? 1);
+        const preset = this.#presetTo(frac);
+        if (!preset) throw new GameError('当前无法施压（没有下注/加注选项）', 'CANNOT_PRESSURE');
+        engineCmd = { action: preset.type, amount: preset.to };
+      } else if (label === 'bet' || label === 'raise') {
+        throw new GameError('自由加注仅在 GOTCHA 阶段开放', 'NOT_GOTCHA');
+      } else if (!NORMAL_OK.has(label)) {
+        throw new GameError(`不支持的动作：${label}`, 'BAD_ACTION');
+      } else {
+        engineCmd = { action: label, amount };
+      }
     }
 
     const { normalized, events: engineEvents } = d.act(PLAYER, engineCmd);
@@ -409,6 +528,15 @@ export class Battle {
     ));
     events.push(...outEvents);
     this.#recordHistory('player', displayAction, preStreet, normalized.to ?? 0);
+
+    // ---- GOTCHA：阶梯翻倍 + 自动泄漏 ----
+    if (this.mode === 'GOTCHA') {
+      if (normalized.type === 'raise') this.#bumpRaiseStep();
+      this.#maybeAutoLeak(events, normalized.type);
+    }
+
+    // ---- ★ 每次成功行动后验证 PIN → 可能形成 CRACK ----
+    this.#validatePinCrack(events, displayAction);
 
     // ---- Player Model 记账（READ→HEAVY 等习惯；先置窗口再消费）----
     if (displayAction === 'pressure') this.model.record('pressure');
@@ -429,130 +557,109 @@ export class Battle {
     return { view: this.view(), events };
   }
 
-  // ------------------------------------------------------------ READ
+  // ------------------------------------------------------------ READ（v4 批量 + 限量）
 
   /**
-   * READ：闪现一条心理碎片（无限次，短冷却）。
-   * 类型（TRUE/NOISE/DISTORTION）与语义标签只在服务端 —— 客户端只拿到 text。
+   * READ：每手限量（readUsesPerHand），一次返回一组心理碎片（3–5 条）。
+   * 只有手工 READ 的碎片带 id（可 PIN）；类型与标签只在服务端。
    */
   read() {
     this.#requirePlayerTurn();
+    if (this.mode === 'GOTCHA') {
+      throw new GameError('GOTCHA 中自动泄漏，无需手动 READ', 'GOTCHA_AUTO_READ');
+    }
+    if (this.readsLeft <= 0) throw new GameError('这一手的 READ 次数已用完', 'READ_EXHAUSTED');
     const t = this.now();
     if (t < this.readCooldownUntil) throw new GameError('READ 正在冷却', 'READ_COOLING');
+
     const events = [];
     const balance = this.balance;
-    const execution = this.mode === 'EXECUTION';
     const state = this.boss.state;
     const intent = this.boss.currentIntent();
+    const range = balance.normalReadFragmentCount ?? { min: 3, max: 5 };
+    const hi = Math.max(range.min, range.max);
+    const count = range.min + Math.floor(this.rng() * (hi - range.min + 1));
 
-    const makeOne = (burst) => {
+    const fragments = [];
+    for (let i = 0; i < count; i++) {
       const frag = makeFragment({
         state,
         intent,
         equity: this.boss.lastEquity,
         street: this.duel.street,
-        execution,
         balance,
         rng: this.rng,
       });
-      const ev = {
-        type: 'read_fragment',
+      const id = `f${++this.fragmentSeq}`;
+      this.handFragments.set(id, {
+        id,
         text: frag.text,
-        flashMs: flashMs(state, balance, execution),
-        burst,
-      };
-      // 碎片流水（只有 text + atHand 下发）
-      this.readFragments.unshift({ text: frag.text, atHand: this.handNo });
-      if (this.readFragments.length > 30) this.readFragments.pop();
+        type: frag.type,          // ★ 服务端私有
+        tags: frag.tags.slice(),  // ★ 服务端私有
+        strength: frag.strength,
+        sourceAction: this.boss.lastActionInfo?.action ?? null,
+        handId: this.handNo,
+      });
+      fragments.push({ id, text: frag.text });
+      this.readFragments.unshift({ id, text: frag.text, atHand: this.handNo });
       this.#feed('read', frag.text);
-
-      // 证据链：只有 TRUE 带标签可能成链
-      const crack = this.evidence.add(frag, this.handNo);
-      return { ev, crack };
-    };
-
-    const first = makeOne(false);
-    events.push(first.ev);
-    let crack = first.crack;
-
-    // EXECUTION：信息量更高（25% 双发）
-    if (execution && this.rng() < (balance.read.burstChanceInExecution ?? 0.25)) {
-      const second = makeOne(true);
-      events.push(second.ev);
-      if (!crack) crack = second.crack;
     }
+    if (this.readFragments.length > 30) this.readFragments.length = 30;
 
+    this.readsLeft -= 1;
     this.readCooldownUntil = t + (balance.read.cooldownMs ?? 400);
     this.model.record('read');
-
-    if (crack) this.#emitCrack(events, crack);
+    events.push({ type: 'read_batch', source: 'manual', flashMs: flashMs(state, balance), fragments });
     return { view: this.view(), events };
   }
 
-  #emitCrack(events, crack) {
-    this.cracks.push({ ...crack, result: null });
-    this.crack = crack;
-    events.push({
-      type: 'crack',
-      id: crack.id,
-      kind: crack.kind,
-      evidence: crack.evidence,
-      strength: crack.strength,
-      critical: crack.critical,
-    });
-    this.#feed('crack', `CRACK! [${crack.kind}] ${crack.evidence.join(' + ')}${crack.critical ? ' · CRITICAL TELL' : ''}`);
+  /** PIN：保留一条本手手工 READ 的碎片（单槽，新覆盖旧）。玩家只见 text。 */
+  pin(fragmentId) {
+    this.#requirePlayerTurn();
+    const meta = this.handFragments.get(String(fragmentId));
+    if (!meta) throw new GameError('这条碎片已不可保留（仅限本手 READ）', 'BAD_FRAGMENT');
+    this.pinned = {
+      fragmentId: meta.id,
+      text: meta.text,
+      type: meta.type,
+      tags: meta.tags.slice(),
+      sourceAction: meta.sourceAction,
+      handId: meta.handId,
+      verified: false,
+    };
+    return { view: this.view(), events: [] };
   }
 
-  // ------------------------------------------------------------ GOTCHA
+  // ------------------------------------------------------------ GOTCHA（v4 进入负债状态）
 
   /**
-   * GOTCHA：押上你的判断。
-   * BLUFF ↔ intent∈{BLUFF,PROBE}；STRONG ↔ intent∈{VALUE,TRAP,CONTROL}。
-   * 正确 → EXECUTION；错误 → COUNTER（Boss 本手攻击暴涨）。
+   * 进入 GOTCHA：解除双方 Stack 安全上限，允许负债下注（方案 §八/§十二）。
+   * 结束条件只有 FOLD / SHOWDOWN，由引擎结算统一处理。
    */
-  gotcha(guess) {
+  gotcha() {
     this.#requirePlayerTurn();
     const events = [];
-    const g = String(guess ?? '').toUpperCase();
-    if (g !== 'BLUFF' && g !== 'STRONG') throw new GameError('只能押 BLUFF 或 STRONG', 'BAD_GUESS');
-    if (!this.crack || !this.crackOpen()) throw new GameError('还没有可用的 CRACK', 'NO_CRACK');
-    const intent = this.boss.currentIntent();
-    if (!intent) throw new GameError('Boss 还没有可判定的行动', 'NO_INTENT');
-
-    const bossSide = intent === 'BLUFF' || intent === 'PROBE' ? 'BLUFF' : 'STRONG';
-    const correct = g === bossSide;
-
-    // 兑现：CRACK 被使用（保留记录）
-    const entry = this.cracks.find((c) => c.id === this.crack.id);
-    if (entry) entry.result = { guess: g, correct };
-    this.crack = null;
-    this.model.record('gotcha', { correct });
-
-    events.push({ type: 'gotcha_result', guess: g, correct, mode: correct ? 'EXECUTION' : 'COUNTER' });
-
-    if (correct) {
-      this.mode = 'EXECUTION';
-      this.gotchaStreak += 1;
-      this.#fire(events, 'GOTCHA_HIT');
-      if (this.gotchaStreak >= (this.balance.gotcha?.streakForTilt ?? 2)) {
-        this.#fire(events, 'GOTCHA_STREAK');
-        this.gotchaStreak = 0;
-      }
-      this.#feed('gotcha', `GOTCHA! 判断正确（${g}）→ EXECUTION 自由下注开启`);
-    } else {
-      this.mode = 'COUNTER';
-      this.gotchaStreak = 0;
-      this.boss.setPhaseBuff({ ...this.balance.counter });
-      this.#feed('gotcha', `GOTCHA 判断错误（${g}）→ COUNTER，他反扑了`);
+    const d = this.duel;
+    const need = this.balance.cracksForGotcha ?? 2;
+    if (this.mode !== 'NORMAL') throw new GameError('已经处于 GOTCHA 中', 'ALREADY_GOTCHA');
+    if (this.cracks.length < need) {
+      throw new GameError(`CRACK 还不够（${this.cracks.length}/${need}）`, 'GOTCHA_NOT_ARMED');
     }
-    events.push({ type: 'mode', mode: this.mode });
-    this.#feed('mode', this.mode === 'EXECUTION' ? 'EXECUTION · 自由下注阶段' : 'COUNTER · Boss 高压阶段');
-    return { view: this.view(), events };
-  }
+    if (d.allIn[0] || d.allIn[1]) throw new GameError('已有人全下，无法进入负债状态', 'GOTCHA_LOCKED');
 
-  /** 未使用的 CRACK 且 Boss 有可判定的 intent → GOTCHA 可发动。 */
-  crackOpen() {
-    return Boolean(this.crack) && Boolean(this.boss.currentIntent());
+    this.mode = 'GOTCHA';
+    d.debtMode = true;
+    this.gotchaDepth = 0;
+    this.gotchaRaiseStep = Math.max(d.lastRaiseSize, d.bigBlind);
+    this.enteredGotchaThisHand = true;
+
+    events.push({ type: 'mode', mode: 'GOTCHA' });
+    this.#feed('gotcha', `GOTCHA！双方解除筹码上限 —— 负债下注开始（${this.cracks.length} 个 CRACK 触发）`);
+    this.#feed('mode', 'GOTCHA · 临时余额可以为负，FOLD/SHOWDOWN 统一结算');
+    // 被看穿到敢押上全部 → 情绪；连续两手上头
+    this.#fire(events, 'GOTCHA_HIT');
+    if (this.enteredGotchaPrevHand) this.#fire(events, 'GOTCHA_STREAK');
+    return { view: this.view(), events };
   }
 
   // ------------------------------------------------------------ 重开
@@ -578,14 +685,16 @@ export class Battle {
   #viewLegal() {
     const d = this.duel;
     const base = mapLegal(d.legal(PLAYER));
-    // PRESSURE / HEAVY 预设：服务端算好 raise-to
-    const pressure = this.#presetTo(this.balance.sizing.pressureFrac ?? 0.5);
-    const heavy = this.#presetTo(this.balance.sizing.heavyFrac ?? 1);
+    const inGotcha = this.mode === 'GOTCHA';
+    // PRESSURE / HEAVY 预设：仅 NORMAL（GOTCHA 用阶梯 RAISE）
+    const pressure = inGotcha ? null : this.#presetTo(this.balance.sizing.pressureFrac ?? 0.5);
+    const heavy = inGotcha ? null : this.#presetTo(this.balance.sizing.heavyFrac ?? 1);
     base.pressure = Boolean(pressure);
     base.heavy = Boolean(heavy);
     base.pressureTo = pressure ? pressure.to : 0;
     base.heavyTo = heavy ? heavy.to : 0;
-    // 自由尺寸字段照常给出；客户端必须用 mode==='EXECUTION' 门禁
+    // GOTCHA：阶梯加注金额（唯一允许的自由 Raise）
+    base.gotchaRaiseTo = inGotcha ? this.#gotchaRaiseTo() : null;
     return base;
   }
 
@@ -601,8 +710,10 @@ export class Battle {
       handName = evaluate([...d.hole[PLAYER], ...d.board]).nameZh;
     }
 
-    const openCrack = this.crack && this.crackOpen() && this.mode === 'NORMAL'
-      ? this.crack
+    // GOTCHA 解锁提示（仅 NORMAL 且 CRACK 达标）
+    const need = this.balance.cracksForGotcha ?? 2;
+    const gotchaArmed = this.mode === 'NORMAL' && this.cracks.length >= need
+      ? { cracks: this.cracks.length, need }
       : null;
 
     return {
@@ -617,12 +728,14 @@ export class Battle {
       effectiveStack: Math.min(d.stacks[PLAYER], d.stacks[BOSS]),
       mode: this.mode,
       player: {
-        chips: d.stacks[PLAYER],
+        chips: d.stacks[PLAYER],            // GOTCHA 结算前可为负（负债）
         bet: d.committed[PLAYER],
         hole: d.hole[PLAYER].slice(),
         toCall: Math.max(0, d.currentBet - d.committed[PLAYER]),
         handName,
         legal: playerTurn ? this.#viewLegal() : emptyLegal(),
+        readsLeft: this.readsLeft,           // ★ 本手剩余 READ（UI: READ 2/2）
+        readsPerHand: this.balance.readUsesPerHand ?? 2,
         readCooldownUntil: this.readCooldownUntil,
       },
       boss: {
@@ -636,20 +749,21 @@ export class Battle {
         lastAction: this.lastBossAction,
         lastLine: this.lastLine,
       },
-      gotcha: openCrack
-        ? { id: openCrack.id, kind: openCrack.kind, evidence: openCrack.evidence.slice() }
-        : null,
+      // ★ PIN：唯一保留位（玩家只见 text + verified）
+      pin: this.pinned ? { text: this.pinned.text, verified: this.pinned.verified } : null,
+      gotcha: gotchaArmed,
       cracks: this.cracks.map((c) => ({
         id: c.id,
         kind: c.kind,
         evidence: c.evidence.slice(),
+        action: c.action,
         strength: c.strength,
         critical: c.critical,
         handNo: c.handNo,
         result: c.result ?? null,
       })),
       history: this.history.slice(),
-      readFragments: this.readFragments.slice(),
+      readFragments: this.readFragments.map((f) => ({ id: f.id ?? null, text: f.text, atHand: f.atHand })),
       feed: this.feed.slice(),
     };
   }
