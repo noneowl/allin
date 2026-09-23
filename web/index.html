@@ -11,13 +11,22 @@
 <link rel="stylesheet" href="/css/battle.css" />
 </head>
 <body>
-  <div class="app" id="app">
+  <div class="app" id="app" data-mode="NORMAL">
     <div class="battle">
       <div class="stagecol">
 
         <!-- ================================================== Boss 区 -->
-        <section class="zone zone--boss" id="boss-zone">
-          <div class="boss" id="boss" data-state="CALM">
+        <section class="zone zone--boss" id="boss-zone" data-state="CALM">
+          <!-- §27 筹码堆：Boss -->
+          <div class="stackbar stackbar--boss">
+            <div class="stackbar__head">
+              <span class="stackbar__who">BOSS 筹码</span>
+              <b class="stackbar__num num" id="boss-chips">—</b>
+            </div>
+            <div class="stackbar__track"><div class="stackbar__fill" id="boss-stack-fill" style="width:0%"></div></div>
+          </div>
+
+          <div class="boss" id="boss">
             <div class="boss__id">
               <div class="boss__avatar" id="boss-avatar">
                 <span class="boss__face" id="boss-face">😏</span>
@@ -31,7 +40,6 @@
                 <span class="dealer-btn" id="boss-dealer" hidden title="庄家">D</span>
                 <span class="betflag" id="boss-bet" hidden><i>△</i><span class="num">0</span></span>
               </div>
-              <div class="boss__chips num" id="boss-chips">—</div>
               <div class="boss__holewrap">
                 <div class="card-row" id="boss-hole"></div>
                 <div class="handname" id="boss-handname" hidden></div>
@@ -40,46 +48,36 @@
             </div>
 
             <div class="talkzone">
-              <div class="effect-chips" id="boss-effects" hidden></div>
               <div class="bubble" id="boss-bubble">
                 <span class="bubble__label">BOSS 台词</span>
                 <span class="bubble__text" id="bubble-text"></span><span class="caret" id="bubble-caret"></span>
               </div>
-
-              <div class="objection" id="objection" hidden>
-                <div class="objection__ring" id="obj-ring">
-                  <svg viewBox="0 0 48 48" width="48" height="48" aria-hidden="true">
-                    <circle class="ring-bg" cx="24" cy="24" r="20"></circle>
-                    <circle class="ring-fg" id="obj-ring-fg" cx="24" cy="24" r="20"></circle>
-                  </svg>
-                  <span class="objection__ms num" id="obj-ms">0</span>
-                </div>
-                <button class="objection__btn" id="btn-objection" type="button">
-                  看穿！<small>SEE-THROUGH</small>
-                </button>
-                <div class="objection__hint">他的话和注码对不上</div>
-                <div class="objection__line" id="objection-line"></div>
-              </div>
+              <!-- READ 碎片闪现浮层（fire-and-forget，flashMs 后淡出） -->
+              <div class="fragflash" id="frag-flash" aria-hidden="true"></div>
             </div>
           </div>
         </section>
 
         <!-- ================================================ 牌桌中心 -->
         <section class="zone zone--table" id="table-zone">
-          <div class="table-strip" id="state-scale">
-            <div class="state-scale">
-              <span class="state-scale__label">情绪刻度</span>
-              <div class="state-scale__steps" id="state-scale-steps">
-                <span class="state-scale__step" data-state="FLOW">✨ 神了</span>
-                <span class="state-scale__step" data-state="HOT">🤑 得意</span>
-                <span class="state-scale__step" data-state="CALM">😏 冷静</span>
-                <span class="state-scale__step" data-state="SHAKEN">😳 动摇</span>
-                <span class="state-scale__step" data-state="TILT">😡 上头</span>
-                <span class="state-scale__step" data-state="BREAKING">🤯 崩坏</span>
+          <!-- 牌桌上方窄 HUD 条带：牌型 / Call Cost / Effective Stack / 盲注 / 模式 / 三状态情绪 -->
+          <div class="table-strip" id="hud-strip">
+            <div class="hud">
+              <div class="hud__stat" title="你当前的成牌牌型"><i>牌型</i><b id="hud-hand">—</b></div>
+              <div class="hud__stat" title="现在跟注需要花多少筹码"><i>Call Cost</i><b class="num" id="hud-tocall">—</b></div>
+              <div class="hud__stat" title="Effective Stack = min(你, Boss)，每手最大风险"><i>Effective Stack</i><b class="num" id="hud-eff">—</b></div>
+              <div class="hud__stat" title="当前盲注级别"><i>盲注</i><b class="num" id="hud-blind">—</b></div>
+              <div class="hud__stat" title="下次盲注升级"><i>下次升级</i><b id="hud-blind-next">—</b></div>
+              <div class="hud__mode" id="hud-mode" data-mode="NORMAL" title="NORMAL 正常 / EXECUTION 自由下注 / COUNTER Boss 反扑">NORMAL</div>
+              <div class="hud__mood" id="hud-mood" title="Boss 三状态情绪">
+                <span data-state="CALM">😏 冷静</span>
+                <span data-state="SHAKEN">😳 动摇</span>
+                <span data-state="TILT">😡 上头</span>
               </div>
             </div>
             <div class="state-hint" id="state-hint" title="">—</div>
           </div>
+
           <div class="felt" id="felt">
             <div class="felt__watermark">TEXAS HOLD'EM · BOSS 战</div>
             <div class="felt__center">
@@ -96,25 +94,32 @@
         <!-- ================================================ 玩家区域 -->
         <section class="zone zone--player" id="player-zone">
           <div class="player" id="player">
-            <div class="player__holewrap">
-              <div class="card-row" id="player-hole"></div>
-              <div class="handname" id="player-handname" hidden></div>
-            </div>
             <div class="player__meta">
               <div class="player__title">
                 你
                 <span class="dealer-btn" id="player-dealer" hidden title="庄家">D</span>
                 <span class="betflag" id="player-bet" hidden><i>△</i><span class="num">0</span></span>
               </div>
-              <div class="player__chips num" id="player-chips">—</div>
               <div class="pill player__tocall" id="player-tocall" hidden></div>
             </div>
+            <div class="player__holewrap">
+              <div class="card-row" id="player-hole"></div>
+              <div class="handname" id="player-handname" hidden></div>
+            </div>
+          </div>
+          <!-- §27 筹码堆：你 -->
+          <div class="stackbar stackbar--me">
+            <div class="stackbar__head">
+              <span class="stackbar__who">你的筹码</span>
+              <b class="stackbar__num num" id="player-chips">—</b>
+            </div>
+            <div class="stackbar__track"><div class="stackbar__fill" id="player-stack-fill" style="width:0%"></div></div>
           </div>
         </section>
 
       </div>
 
-      <!-- ============================================== 右侧信息栏 -->
+      <!-- ============================================== 右侧信息栏（四分区） -->
       <aside class="side">
         <section class="pane">
           <header class="pane__head">
@@ -125,25 +130,24 @@
         </section>
 
         <section class="pane">
-          <header class="pane__head"><h2>NPC Table Talk</h2></header>
-          <div class="feed" id="talk"></div>
+          <header class="pane__head">
+            <h2>READ Fragments</h2>
+            <span class="pill" id="frag-pill">0 条</span>
+          </header>
+          <div class="feed feed--top" id="fragments"></div>
         </section>
 
         <section class="pane">
           <header class="pane__head">
-            <h2>READ Result</h2>
-            <span class="pill" id="read-left-pill">本手 —</span>
+            <h2>CRACK Feedback</h2>
+            <span class="pill" id="crack-pill">未解锁</span>
           </header>
-          <div class="readbox" id="readbox">
-            <div class="readbox__latest" id="read-latest">尚未进行 READ。</div>
-            <div class="readbox__lean" id="read-lean" hidden></div>
-            <div class="feed feed--reads" id="reads"></div>
-          </div>
+          <div class="feed feed--top" id="cracks"></div>
         </section>
 
         <section class="pane">
-          <header class="pane__head"><h2>Important Events</h2></header>
-          <div class="feed" id="important"></div>
+          <header class="pane__head"><h2>Battle Log</h2></header>
+          <div class="feed" id="battlelog"></div>
         </section>
       </aside>
     </div>
@@ -157,12 +161,22 @@
       </div>
 
       <div class="ab__acts" id="ab-acts">
-        <button class="btn btn--lg" id="btn-check" type="button"><span id="check-label">过牌</span> <kbd>C</kbd></button>
-        <button class="btn btn--lg btn--call" id="btn-call" type="button"><span id="call-label">跟注</span> <kbd>C</kbd></button>
         <button class="btn btn--lg btn--fold" id="btn-fold" type="button">弃牌 <kbd>F</kbd></button>
+        <button class="btn btn--lg btn--call" id="btn-callcheck" type="button"><span id="callcheck-label">过牌</span> <kbd>C</kbd></button>
+
+        <button class="btn btn--lg btn--pressure" id="btn-pressure" type="button" title="额外投入 0.5×当前底池（服务端算好加注到多少）">
+          <span class="ab__btn-main">PRESSURE <kbd>P</kbd></span>
+          <span class="ab__btn-sub">0.5 池 · 至 <b class="num" id="pressure-to">—</b></span>
+        </button>
+        <button class="btn btn--lg btn--heavy" id="btn-heavy" type="button" title="额外投入 1.0×当前底池">
+          <span class="ab__btn-main">HEAVY <kbd>H</kbd></span>
+          <span class="ab__btn-sub">1.0 池 · 至 <b class="num" id="heavy-to">—</b></span>
+        </button>
+
         <button class="btn btn--lg btn--danger" id="btn-allin" type="button"><span id="allin-label">全下</span> <kbd>A</kbd></button>
 
-        <div class="raise" id="raise-box">
+        <!-- EXECUTION 模式专属：自由加注滑杆（以 view.mode==='EXECUTION' 门禁） -->
+        <div class="raise" id="raise-box" hidden>
           <div class="raise__top">
             <span class="raise__label" id="raise-label-top">下注至</span>
             <input class="raise__slider" id="raise-slider" type="range" min="0" max="100" step="10" value="0" />
@@ -178,23 +192,30 @@
         </div>
       </div>
 
-      <div class="ab__mental" id="ab-mental">
-        <div class="ab__mental-row">
-          <div class="ab__mental-title">心理操作</div>
-          <button class="btn mental mental--read" id="btn-read" type="button" title="读取 Boss 的模糊倾向与期望方向">
-            READ <span class="mental__left num" id="read-left-badge">×2</span>
+      <!-- 特殊操作区：READ（冷却转圈） + GOTCHA!（BLUFF/STRONG 二选一确认） -->
+      <div class="ab__special" id="ab-special">
+        <div class="mental-hint" id="mental-hint">READ 攒碎片 → CRACK 成链 → GOTCHA 押注判断</div>
+        <div class="ab__special-row">
+          <button class="btn mental mental--read" id="btn-read" type="button" title="读取 Boss 脑中的碎片（冷却极短、本手无限次）">
+            <span class="read-ring" id="read-ring"><span class="read-ring__core">READ</span></span>
+            <span class="read-cd num" id="read-cd">READY</span>
           </button>
-          <button class="btn mental" id="btn-taunt" type="button" title="让他更凶、更大注">
-            挑衅 <span class="mental__left num" id="taunt-left">×1</span>
-          </button>
-          <button class="btn mental mental--challenge" id="btn-challenge" type="button" title="追打已经暴露的破绽">
-            质疑 <span class="mental__left num" id="challenge-left">×1</span>
-          </button>
-          <button class="btn mental" id="btn-pressure" type="button" title="让他更想退缩，掩护你的诈唬">
-            施压 <span class="mental__left num" id="pressure-left">×1</span>
-          </button>
+
+          <div class="gotcha" id="gotcha-zone">
+            <button class="btn gotcha__btn" id="btn-gotcha" type="button" disabled title="证据链成立后才能发动">
+              GOTCHA! <kbd>G</kbd>
+            </button>
+            <div class="gotcha__confirm" id="gotcha-confirm" hidden>
+              <button class="btn gotcha__guess gotcha__guess--bluff" id="btn-guess-bluff" type="button">
+                BLUFF<small>他在诈 · 想让你弃</small>
+              </button>
+              <button class="btn gotcha__guess gotcha__guess--strong" id="btn-guess-strong" type="button">
+                STRONG<small>他真有货 · 或设套</small>
+              </button>
+              <button class="btn gotcha__cancel" id="btn-guess-cancel" type="button" title="取消">✕</button>
+            </div>
+          </div>
         </div>
-        <div class="mental-hint" id="mental-hint">瞄准 · 布局 · 看准破绽再出手</div>
       </div>
     </footer>
   </div>
@@ -214,89 +235,108 @@
 
   <div class="toasts" id="toasts"></div>
 
-  <!-- ==================================================== 新手引导 -->
+  <!-- ==================================================== 新手引导（v3 · 6 页） -->
   <div class="guide" id="guide" hidden>
     <div class="guide__card" role="dialog" aria-modal="true" aria-label="新手引导">
       <div class="guide__head">
         <span class="guide__brand">♠ ALLIN · 新手引导</span>
-        <span class="guide__step num" id="guide-step">1 / 5</span>
+        <span class="guide__step num" id="guide-step">1 / 6</span>
       </div>
 
       <div class="guide__body" id="guide-body">
+
+        <!-- ① 不对称挑战 -->
         <section class="guide__page">
-          <h3>把他的筹码打到 0，就是击败他</h3>
+          <h3>① 500 对 5000：一场不对称的 Boss 战</h3>
           <ul>
-            <li>双方各 <strong>1000 筹码</strong>：筹码 = 下注资源 = <span class="hi">生命值</span> = 战斗进度</li>
-            <li>他的筹码归零 → <span class="hi">BREAK</span>，战斗胜利；你的归零 → 战斗失败</li>
-            <li>没有技能栏 —— <strong>所有攻防都通过扑克动作完成</strong>，牌桌本身就是整场战斗</li>
+            <li>你 <strong>500</strong> 筹码，Boss <strong>5000</strong> —— 筹码 = 下注资源 = <span class="hi">生命值</span> = 战斗进度；
+              把他的筹码打到 0 就是胜利，你的归零就是失败</li>
+            <li><span class="hi">Effective Stack</span> = min(你, Boss)：每手最多只能从对方身上赢走这么多 ——
+              你越弱，战场越小；<strong>赢回来的筹码会把你的战场撑大</strong>（筹码即成长）</li>
+            <li><span class="hi">盲注会升级</span>：每隔几手盲注翻倍（HUD 上写着当前级别与下次升级）——
+              不打就会被盲注磨死，逼你后期正面对决</li>
+            <li>没有技能栏 —— <strong>所有攻防都通过扑克动作 + READ/CRACK/GOTCHA 完成</strong></li>
           </ul>
-          <div class="guide__loop">读他 → 影响他 → 抓破绽 → 他在牌桌上犯错 → 你赢走筹码</div>
+          <div class="guide__loop">筹码即生命：赢 → Effective Stack ↑ → 能打更大的 pot → 赢更多</div>
         </section>
 
+        <!-- ② 简化操作 -->
         <section class="guide__page">
-          <h3>扑克动作 = 战斗动作</h3>
+          <h3>② 五个按钮，就是全部操作</h3>
           <table class="guide__map">
-            <tr><td>下注 / 加注</td><td>攻击、施压 —— 让他做决定</td></tr>
-            <tr><td>跟注</td><td>防御、接招 —— 抓住他的诈唬就是一次反击</td></tr>
-            <tr><td>过牌</td><td>示弱、诱敌 —— 等他露出破绽再动手</td></tr>
-            <tr><td>弃牌</td><td>撤退、止损 —— 输小的不算输</td></tr>
-            <tr><td>全下</td><td>必杀 —— 高风险决战，筹码即生命</td></tr>
+            <tr><td>弃牌 FOLD</td><td>撤退止损 —— 输小的不算输</td></tr>
+            <tr><td>CALL / CHECK</td><td>接招 / 过牌 —— 便宜看牌、静观其变</td></tr>
+            <tr><td>PRESSURE</td><td>投入 <strong>0.5×当前底池</strong> 的中压注（按钮上写着加注到多少）</td></tr>
+            <tr><td>HEAVY</td><td>投入 <strong>1.0×当前底池</strong> 的重压注 —— 让他做决定</td></tr>
+            <tr><td>ALL IN</td><td>押上全部 —— 决胜手，筹码即生命</td></tr>
           </table>
-          <p>他也在用同样的动作打你。拿到好牌只是一半，<strong>看穿他出什么牌才是另一半</strong>。</p>
+          <p><span class="hi">HUD 条带</span>（牌桌上方）从左到右读：<strong>牌型</strong>（当前成牌）、
+            <strong>Call Cost</strong>（跟注要花多少）、<strong>Effective Stack</strong>（每手最大风险）、
+            <strong>盲注与下次升级</strong>、<strong>模式</strong>（NORMAL / EXECUTION / COUNTER）、
+            Boss 的<strong>三状态情绪</strong>（冷静😏 / 动摇😳 / 上头😡）与一行打法提示。</p>
+          <p>下方两条<span class="hi">筹码堆</span>是战况总览：他的在缩、你的在涨，就是你在把他身上夺过来。</p>
         </section>
 
+        <!-- ③ READ 碎片 -->
         <section class="guide__page">
-          <h3>瞄准：READ —— 什么时候读、读到什么</h3>
+          <h3>③ READ：偷看一眼他脑子里的碎片</h3>
           <ul>
-            <li><span class="hi">时机</span>：他下注/加注、轮到你决定时，READ 按钮会<span class="hi">呼吸发光</span> ——
-              他开口之后、你回答之前，是读心的黄金瞬间（每手 ×2）</li>
-            <li><span class="hi">读到两行</span>：一行模糊的心理信息 + 一个<span class="hi">倾向标签</span> ——
-              「他想让你弃牌」「他欢迎你跟」「他在等你犯错」「他自己也没底」</li>
-            <li>标签告诉你<strong>他希望你出什么牌</strong>，不是他有什么牌 —— 他完全可能在演</li>
-            <li>判断公式：<strong>倾向 × 你的牌 × 他的注码</strong>，三方对不上就有鬼 —— 信他还是逆着他打，由你决定</li>
+            <li>按下 <span class="hi">READ</span>，Boss 头旁会<span class="hi">闪现一行碎片</span>，0.5–1.5 秒后淡出
+              （他越冷静闪得越久、越上头闪得越快）；同时进入右侧 READ Fragments 面板</li>
+            <li><strong>本手无限次</strong>，只有极短冷却（按钮转圈就是冷却）—— 可以连续发动、按到爽</li>
+            <li>碎片有三种来源，但<span class="hi">绝不标类型</span>：他的<strong>真心话</strong>、
+              真实但<strong>无关的杂念</strong>、以及他<strong>自己的错觉与过度自信</strong> ——
+              三者长得一模一样，全是同一行字</li>
+            <li>所以必须<span class="hi">交叉验证</span>：对照牌面、他的注码、他的行动 ——
+              「他说别跟」到底是怕你跟，还是想让你弃？只有牌局实况能告诉你</li>
           </ul>
         </section>
 
+        <!-- ④ CRACK -->
         <section class="guide__page">
-          <h3>布局：挑衅 · 施压（+ 贴纸反馈）</h3>
+          <h3>④ CRACK：把真话串成证据链</h3>
           <ul>
-            <li><span class="hi">挑衅</span>：想让他反抗时用 —— 你拿着大牌，希望他加注别跑 → 命中后他身上挂
-              <strong>🔥被激怒</strong>（更想加注、注更大）</li>
-            <li><span class="hi">施压</span>：你准备诈唬时先压他 → 挂 <strong>⛓被压制</strong>（更想退缩），
-              然后放心开大注</li>
-            <li><span class="hi">贴纸</span>会一直挂到效果结束 —— 你下注时抬眼就能看见，
-              <strong>这就是心理攻击落回牌桌的形态</strong></li>
-            <li>得意(🤑)的他言语减半、神了(✨)的他<span class="hi">完全免疫</span> —— 顺风时别嘴他</li>
+            <li>碎片里带着语义标签（你<strong>看不到</strong>标签本身，只能从字面判断）；
+              当多条真话的标签凑成一条规则 —— 屏幕<span class="hi">白闪、震屏、「CRACK!」大字</span></li>
+            <li>例：<strong>「想让你弃」+「牌弱」</strong> 连成 WEAKNESS（弱点链）；
+              <strong>「牌强」+「设套」</strong> 连成 STRENGTH（强牌链）</li>
+            <li><span class="hi">出现 CRACK 才解锁 GOTCHA!</span> 按钮 —— 没有证据链，就没有资格押注判断</li>
+            <li><span class="hi">CRITICAL</span>：单条高强度真话直接成链，低概率、高刺激；
+              证据链只在本手有效 —— <strong>他下一次重要行动会作废旧证据</strong></li>
+            <li>CRACK Feedback 面板列出每条链的 kind、证据标签与强度点数</li>
           </ul>
         </section>
 
+        <!-- ⑤ GOTCHA -->
         <section class="guide__page">
-          <h3>看穿：破绽出现的三拍</h3>
-          <ul>
-            <li><strong>① 他下注</strong> —— 注码插在桌上，大注小注一眼可见</li>
-            <li><strong>② 他说话</strong> —— 台词逐字打出，狠话软话一眼可见</li>
-            <li><strong>③ 破绽</strong> —— 话音落下，<span class="hi">话和注对不上</span>时：
-              气泡和注码同时发亮、心跳响起 → 倒计时内按下 <strong>「看穿！」</strong></li>
-            <li>命中 = <strong>心理防线掉一格</strong>（横幅会告诉你他接下来会怎么变）</li>
-            <li>窗口只在<span class="hi">真矛盾</span>时出现，假窗口不存在；错过了还能用
-              <strong>质疑</strong>追打同一句假话（按钮只在「他的话有破绽」时亮起）</li>
-          </ul>
-        </section>
-
-        <section class="guide__page">
-          <h3>情绪刻度：他在崩坏，就是你在赢</h3>
+          <h3>⑤ GOTCHA：押注你的判断</h3>
           <table class="guide__map">
-            <tr><td>✨ 神了</td><td>纯利 · 读不出、说不动 —— 但命短，输一手就掉档，<strong>弃牌熬他</strong></td></tr>
-            <tr><td>🤑 得意</td><td>抗言语、注更狠；但会空城大注、敢 hero call —— <strong>抓他的大注</strong></td></tr>
-            <tr><td>😏 冷静</td><td>难读、不送分 —— <strong>主动搞他，拖出舒适区</strong></td></tr>
-            <tr><td>😳 动摇</td><td>更凶；但漏话最多 —— <strong>多读、多抓</strong></td></tr>
-            <tr><td>😡 上头</td><td>暴力能吓走你；但弃得少、爱接全下 —— <strong>大注推他</strong></td></tr>
-            <tr><td>🤯 崩坏</td><td>纯弊 · 信息全漏 —— <strong>全力收割</strong></td></tr>
+            <tr><td>BLUFF</td><td>你赌<strong>他在虚张声势</strong> —— 他想让你弃牌 / 自己没底</td></tr>
+            <tr><td>STRONG</td><td>你赌<strong>他真有货</strong> —— 强牌、陷阱，或者在设套等你</td></tr>
           </table>
-          <p>刻度是<span class="hi">双向拔河</span>：你点破他 → 掉格；他赢大底池/连赢 → <strong>回血爬正向轴</strong>。
-            你输给他不只是输筹码，还会给他续命。</p>
-          <p>键盘：<strong>F</strong> 弃牌 · <strong>C</strong> 过牌/跟注 · <strong>A</strong> 全下 ·
-            <strong>↵</strong> 提交加注 · 左下角 <strong>?</strong> 随时重看本引导。</p>
+          <ul>
+            <li>按钮弹出<span class="hi">二选一确认条</span>，选边落定即提交 —— 服务端拿你的猜测与他的真实意图比对</li>
+            <li><strong>猜对 → EXECUTION</strong>：高压处决阶段 —— 自由下注滑杆开放（任意尺寸 bet/raise），
+              READ <strong>高速连发</strong>、更短更快，还有概率一次闪两条</li>
+            <li><strong>猜错 → COUNTER</strong>：他立刻反扑 —— 本手内注更大、更凶、更敢诈</li>
+            <li><span class="hi">越富越怕错</span>：Effective Stack 越大，一次判断失误送出的筹码越多 ——
+              别在没证据时乱按</li>
+          </ul>
+        </section>
+
+        <!-- ⑥ 三阶段节奏 -->
+        <section class="guide__page">
+          <h3>⑥ 三阶段节奏与快捷键</h3>
+          <table class="guide__map">
+            <tr><td>Early</td><td>盲注小、观察期 —— 多 READ 攒碎片，小 pot 试水，别冒险</td></tr>
+            <tr><td>Mid</td><td>证据链成型、交锋期 —— CRACK → GOTCHA 决定节奏；中压/重压开始交换</td></tr>
+            <tr><td>Late</td><td>盲注高压 —— 不动手就被磨死；Effective Stack 决胜，ALL IN 一决生死</td></tr>
+          </table>
+          <div class="guide__loop">打牌 → READ 碎片 → 证据链 → CRACK → GOTCHA（对 = EXECUTION / 错 = COUNTER）→ 真实筹码结算 → 下一手</div>
+          <p>键盘：<strong>F</strong> 弃牌 · <strong>C</strong> 过牌/跟注 · <strong>P</strong> PRESSURE ·
+            <strong>H</strong> HEAVY · <strong>A</strong> 全下 · <strong>R</strong> READ ·
+            <strong>G</strong> GOTCHA 确认条 · <strong>↵</strong> EXECUTION 提交自由加注 ·
+            左下角 <strong>?</strong> 随时重看本引导。</p>
         </section>
       </div>
 

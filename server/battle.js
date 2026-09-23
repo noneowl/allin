@@ -1,24 +1,30 @@
 /**
- * 战斗编排：牌桌（Duel）× Boss 心理层 × 玩家的心理操作。
+ * 战斗编排（v3）：不对称筹码 Boss 战。
  *
- * 职责：
- *   1. 驱动每一手牌（盲注 → 行动循环 → 结算 → 立即下一手）
- *   2. Boss 每次行动后选台词、检测矛盾、开异议窗口
- *   3. READ / 挑衅 / 质疑 / 施压 的门禁、次数、效果
- *   4. 心理事件 → 状态转移 → 台词池/行为参数变化
- *   5. 产出 view（玩家视角）+ events（按顺序播放的动画队列）
+ * 德州层（Duel）+ Boss 三层决策（ai.js）+ 心理攻防（READ 碎片 → CRACK → GOTCHA →
+ * EXECUTION / COUNTER）+ 盲注升级 + Player Model / BUSTED。
  *
- * 安全边界：view 里永远没有 Boss 底牌（摊牌事件除外）、deck、intent、
- * 矛盾判定结果。异议窗口只给 id/deadline/line，真假由服务端点击时判定。
+ * 核心循环：
+ *   打牌 → READ 碎片 → 证据链成 CRACK → GOTCHA 押注 BLUFF/STRONG
+ *     ├─ 对 → EXECUTION（自由下注 + 高速 READ）
+ *     └─ 错 → COUNTER（Boss 本手攻击暴涨）
+ *   → 真实筹码结算 → Effective Stack 成长 → 盲注升级逼向高潮
+ *
+ * 安全边界：view/events 永远不含 deck、Boss intent、碎片 type/tags、Player Model、
+ * 判定中间量。协议见 docs/PROTOCOL.md。
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Duel, GameError } from './engine/duel.js';
-import { Boss } from './boss/boss.js';
-import { sizeLevel, claimMatches, FINAL_HEART, DEFEAT_LINE, pickWinQuip } from './boss/talk.js';
-import { MOODS, isDownEvent } from './boss/mental.js';
 import { makeDeck, shuffle } from './engine/cards.js';
+import { evaluate } from './engine/evaluator.js';
+import { Boss } from './boss/boss.js';
+import { EvidenceTracker } from './boss/crack.js';
+import { makeFragment, flashMs } from './boss/fragments.js';
+import { PlayerModel } from './boss/playermodel.js';
+import { FINAL_HEART, DEFEAT_LINE } from './boss/talk.js';
+import { MOODS, isDownEvent } from './boss/mental.js';
 
 export const PLAYER = 0;
 export const BOSS = 1;
@@ -26,16 +32,19 @@ export const BOSS = 1;
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const BALANCE_PATH = join(HERE, 'balance.json');
 
-/** 读取全部可调数值（每次调用都重新读盘，改配置不用重启）。 */
+/** 读取全部可调数值（newgame 时重新读盘 → 改配置不用重启）。 */
 export function loadBalance(path = BALANCE_PATH) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
-const SPEECH_LABELS = { taunt: '挑衅', challenge: '质疑', pressure: '施压' };
-const STREET_ORDER = ['preflop', 'flop', 'turn', 'river'];
+const IMPORTANT = new Set(['bet', 'raise', 'allin', 'pressure', 'heavy']);
 
 function emptyLegal() {
-  return { check: false, call: null, fold: false, bet: false, raise: false, minTo: 0, maxTo: 0, allin: 0 };
+  return {
+    check: false, call: null, fold: false,
+    pressure: false, heavy: false, pressureTo: 0, heavyTo: 0,
+    bet: false, raise: false, minTo: 0, maxTo: 0, allin: 0,
+  };
 }
 
 function mapLegal(list) {
@@ -58,12 +67,13 @@ export class Battle {
     this.now = now;
     this.duel = new Duel({
       stacks: [balance.stacks.player, balance.stacks.boss],
-      smallBlind: balance.blinds.small,
-      bigBlind: balance.blinds.big,
+      smallBlind: 10,
+      bigBlind: 20,
     });
     this.boss = new Boss({ balance, rng });
+    this.model = new PlayerModel();
     this._freshFields();
-    this.#feed('system', `战斗开始 · ${balance.personality.name}（欺骗型）· 双方 ${balance.stacks.player} 筹码`);
+    this.#feed('system', `战斗开始 · ${balance.personality.name} DECEIVER · ${balance.stacks.player} vs ${balance.stacks.boss}`);
     this.#beginHand([]);
   }
 
@@ -72,24 +82,23 @@ export class Battle {
   _freshFields() {
     this.phase = 'playing'; // playing | victory | defeat
     this.handNo = 0;
+    this.mode = 'NORMAL'; // NORMAL | EXECUTION | COUNTER（每手重置）
     this.history = [];
     this.feed = [];
-    this.reads = [];
-    this.readsLeft = 0;
-    this.speechLeft = { taunt: 0, challenge: 0, pressure: 0 };
-    this.readUsedHand = false;
-    this.exposeHand = false;
-    this.readStreak = 0;
-    this.streetAgg = {}; // Boss 本手逐街的攻防倾向
-    this.handAggressiveIntents = []; // Boss 本手的攻击性行动 {action, intent}
-    this.playerAggressive = false; // 玩家本手是否主动下过注
-    this.openWindow = null; // 破绽窗口 {id, deadline, line, windowMs}
+    this.readFragments = []; // [{ text, atHand }] 最新在前
+    this.cracks = [];        // 本手已形成的证据链
+    this.crack = null;       // 最近一个未使用的 CRACK（GOTCHA 的对象）
+    this.gotchaStreak = 0;   // 连续正确 GOTCHA（跨手累计，答错清零）
+    this.evidence = new EvidenceTracker(this.balance.cracks);
+    this.readCooldownUntil = 0;
     this.lastBossAction = null;
     this.lastLine = null;
     this.lastPlayerAction = null;
+    this.handAggressiveIntents = []; // Boss 本手的攻击性行动（抓诈唬判定）
+    this.playerAggressive = false;
+    this.prevBlind = null; // 上一手盲注（blindUp 判定）
     this.firstHandDone = false;
-    this.bossStreak = 0; // Boss 连胜手数（爬正向轴用）
-    this.recentHands = []; // 最近几手 Boss 的筹码净流向（势头）
+    this.lastBustedHand = -999;
   }
 
   #feed(kind, text) {
@@ -97,21 +106,75 @@ export class Battle {
     if (this.feed.length > 100) this.feed.shift();
   }
 
-  /** 势头：最近几手 Boss 的净筹码流向（正=顺风）。 */
-  momentum() {
-    return this.recentHands.reduce((sum, n) => sum + n, 0);
+  #recordHistory(actor, action, street, amount) {
+    this.history.push({ handNo: this.duel.handNo, street, actor, action, amount });
+    if (this.history.length > 60) this.history.shift();
   }
 
-  /** 当前状态对某个心理事件的抗性（0..1，乘在转移概率上）。 */
-  #armor(name) {
-    const armor = this.boss.stateDef?.armor;
-    const v = armor?.[name];
-    return Number.isFinite(v) ? v : 1;
+  // ------------------------------------------------------------ 盲注升级
+
+  /** 当前手数所在的盲注档（含档位标签与下一次升级提示）。 */
+  blindFor(handNo) {
+    const sched = this.balance.blindSchedule ?? [{ firstHand: 1, lastHand: 9999, sb: 10, bb: 20 }];
+    const tier = sched.find((t) => handNo >= t.firstHand && handNo <= t.lastHand) ?? sched[sched.length - 1];
+    const idx = sched.indexOf(tier);
+    const next = sched[idx + 1] ?? null;
+    const lastLabel = tier.lastHand >= 9999 ? `${tier.firstHand}+` : `${tier.firstHand}–${tier.lastHand}`;
+    return {
+      sb: tier.sb,
+      bb: tier.bb,
+      tier: `第 ${lastLabel} 手 · ${tier.sb}/${tier.bb}`,
+      nextUp: next ? `第 ${next.firstHand} 手 → ${next.sb}/${next.bb}` : null,
+    };
   }
 
-  /** 心理事件统一出口：转移成功 → 事件（带行为提示与方向）+ feed。 */
+  // ------------------------------------------------------------ 开一手
+
+  #beginHand(events) {
+    this.handNo += 1;
+    this.duel.handNo = this.handNo;
+
+    const blind = this.blindFor(this.handNo);
+    const blindUp = Boolean(this.prevBlind && (this.prevBlind.sb !== blind.sb || this.prevBlind.bb !== blind.bb));
+    this.prevBlind = { sb: blind.sb, bb: blind.bb };
+    this.duel.smallBlind = blind.sb;
+    this.duel.bigBlind = blind.bb;
+
+    // 手牌级重置：模式、证据、CRACK、GOTCHA、本手增益
+    this.mode = 'NORMAL';
+    this.boss.resetHand();
+    this.evidence.reset();
+    this.cracks = [];
+    this.crack = null;
+    this.handAggressiveIntents = [];
+    this.playerAggressive = false;
+    this.lastBossAction = null;
+    this.lastLine = null;
+    this.model.s.readWindow = false;
+    this.model.s.pressureWindow = false;
+
+    const button = this.firstHandDone ? 1 - this.duel.button : (this.rng() < 0.5 ? 0 : 1);
+    this.firstHandDone = true;
+
+    if (blindUp) this.#feed('blind', `BLIND UP → ${blind.sb}/${blind.bb}（${blind.tier}）`);
+    events.push({
+      type: 'hand_start',
+      handNo: this.handNo,
+      button,
+      sb: blind.sb,
+      bb: blind.bb,
+      tier: blind.tier,
+      blindUp,
+    });
+    const blinds = this.duel.startHand({ button, deck: shuffle(makeDeck(), { next: this.rng }) });
+    events.push(...blinds);
+    this.#drive(events);
+  }
+
+  // ------------------------------------------------------------ Boss 驱动
+
   #fire(events, name) {
-    const t = this.boss.mentalEvent(name, this.#armor(name));
+    const t = this.boss.mentalEvent(name);
     if (!t) return null;
     events.push({
       type: 'mental',
@@ -120,73 +183,41 @@ export class Battle {
       cause: name,
       causeName: t.causeName,
       hint: t.hint,
-      down: isDownEvent(t.from, t.to),
+      down: t.down,
     });
     const arrow = isDownEvent(t.from, t.to) ? '▼' : '▲';
     this.#feed('mental', `${arrow} ${MOODS[t.from]} → ${MOODS[t.to]} · ${t.causeName}`);
     return t;
   }
 
-  /** 给玩家看的「倾向贴纸」：言语 Buff 还在生效的可见提示。 */
-  #effects() {
-    const out = [];
-    for (const b of this.boss.buffs) {
-      if (b.skill === 'taunt' && !out.some((e) => e.kind === 'taunt')) {
-        out.push({ kind: 'taunt', icon: '🔥', label: '被激怒', desc: '他更想加注、注更大' });
-      } else if (b.skill === 'pressure' && !out.some((e) => e.kind === 'pressure')) {
-        out.push({ kind: 'pressure', icon: '⛓', label: '被压制', desc: '他更想退缩' });
-      }
-    }
-    return out;
+  /** BUSTED!：模型把握度足够 + 冷却完毕 + 运气 → Boss 专属技（进入 COUNTER）。 */
+  #maybeBusted(events) {
+    if (this.mode !== 'NORMAL') return false;
+    const conf = this.balance.busted;
+    if (this.handNo < (conf.minHand ?? 3)) return false;
+    if (this.handNo - this.lastBustedHand < (conf.cooldownHands ?? 4)) return false;
+    if (!this.model.bustedReady(conf.confidence ?? 0.7)) return false;
+    if (this.rng() >= (conf.chance ?? 0.12)) return false;
+
+    this.lastBustedHand = this.handNo;
+    this.model.lastBustedAtHand = this.handNo;
+    this.mode = 'COUNTER';
+    this.boss.setPhaseBuff({ ...this.balance.counter });
+    events.push({ type: 'busted', line: conf.line });
+    events.push({ type: 'mode', mode: 'COUNTER' });
+    this.#feed('model', `BUSTED! · ${conf.line}`);
+    this.#feed('mode', 'Boss 主导的高压阶段开始（COUNTER）');
+    return true;
   }
-
-  #recordHistory(actor, normalized, street) {
-    this.history.push({
-      handNo: this.duel.handNo,
-      street,
-      actor, // 'player' | 'boss'
-      action: normalized.type,
-      amount: normalized.to ?? 0,
-    });
-    if (this.history.length > 60) this.history.shift();
-  }
-
-  // ------------------------------------------------------------ 开一手
-
-  #beginHand(events) {
-    this.handNo += 1;
-    this.duel.handNo = this.handNo;
-    this.boss.resetHand();
-    this.streetAgg = {};
-    this.handAggressiveIntents = [];
-    this.playerAggressive = false;
-    this.readUsedHand = false;
-    this.exposeHand = false;
-    this.lastBossAction = null;
-    this.lastLine = null;
-    this.readsLeft = this.balance.read.perHand;
-    this.speechLeft = { ...this.balance.speech.perHand };
-
-    const button = this.firstHandDone ? 1 - this.duel.button : (this.rng() < 0.5 ? 0 : 1);
-    this.firstHandDone = true;
-
-    events.push({ type: 'hand_start', handNo: this.handNo, button });
-    // 牌堆也走注入的 rng —— 整场战斗完全可复现（测试的关键）
-    const deck = shuffle(makeDeck(), { next: this.rng });
-    const blinds = this.duel.startHand({ button, deck });
-    events.push(...blinds);
-    this.#drive(events);
-  }
-
-  // ------------------------------------------------------------ Boss 驱动
 
   #drive(events) {
     let guard = 0;
     while (this.duel.phase === 'playing' && this.duel.toAct === BOSS && guard++ < 80) {
       const d = this.duel;
+      this.#maybeBusted(events);
+
       const preStreet = d.street;
       const potBefore = d.pot;
-
       const decision = this.boss.decide({
         hole: d.hole[BOSS],
         board: d.board,
@@ -198,6 +229,7 @@ export class Battle {
         legal: d.legal(BOSS),
         bigBlind: d.bigBlind,
         playerAllIn: Boolean(this.lastPlayerAction?.allIn && this.lastPlayerAction.street === preStreet),
+        model: this.model,
       });
 
       const { normalized, events: engineEvents } = d.act(BOSS, {
@@ -205,97 +237,34 @@ export class Battle {
         amount: decision.amount,
       });
       events.push(...engineEvents);
-      this.#recordHistory('boss', normalized, preStreet);
+      this.#recordHistory('boss', normalized.type, preStreet, normalized.to ?? 0);
       this.lastBossAction = { action: normalized.type, amount: normalized.to ?? 0, street: preStreet };
 
       this.boss.noteAction({ action: normalized.type, intent: decision.intent, street: preStreet });
       if (normalized.put > 0) {
-        this.streetAgg[preStreet] = 'active';
         this.handAggressiveIntents.push({ action: normalized.type, intent: decision.intent, street: preStreet });
-      } else if (!this.streetAgg[preStreet]) {
-        this.streetAgg[preStreet] = 'passive';
       }
 
-      this.#talkAndDetect({
-        events,
-        action: normalized,
-        intent: decision.intent,
-        potBefore,
-        street: preStreet,
-      });
+      // 重要行动 → 旧证据与待兑现的 CRACK 过期（意图已经换了）
+      // 面板历史（view.cracks）保留：未兑现的 result 为 null 即表示已过期
+      if (IMPORTANT.has(normalized.type)) {
+        this.evidence.reset();
+        this.crack = null;
+      }
+
+      // 台词（v3：只承担人格与情绪的表达）
+      const talk = this.boss.talkFor({ action: normalized.type, street: preStreet });
+      if (talk) {
+        this.lastLine = talk.text;
+        events.push({ type: 'talk', line: talk.text });
+        this.#feed('talk', talk.text);
+      }
 
       if (d.phase !== 'playing') {
         this.#onHandEnd(events);
         break;
       }
     }
-  }
-
-  /** 台词 → 矛盾检测 → 异议窗口。 */
-  #talkAndDetect({ events, action, intent, potBefore, street }) {
-    const talk = this.boss.talkFor({
-      action: action.type,
-      intent,
-      potBefore,
-      put: action.put,
-      street,
-    });
-    if (talk) {
-      this.lastLine = talk.text;
-      events.push({ type: 'talk', line: talk.text });
-      this.#feed('talk', talk.text);
-    }
-
-    const put = action.put ?? 0;
-    // 矛盾只对真正的攻击动作成立：跟注/溜入不算「下注」
-    const isAggressive = action.type === 'bet' || action.type === 'raise' || action.type === 'allin';
-    if (!isAggressive || !(put > 0) || !talk) return;
-
-    const conf = this.balance.contradiction;
-    const level = sizeLevel(potBefore, put, conf.sizeLevels);
-    const ratio = put / Math.max(1, potBefore);
-    let kind = null;
-
-    if (!claimMatches(talk.claim, level)) {
-      kind = 'spoken_vs_bet';
-    } else if (
-      (street === 'turn' || street === 'river')
-      && this.#allPriorPassive(street)
-      && ratio >= conf.behaviorOverbet
-    ) {
-      kind = 'behavior';
-    }
-    if (!kind) return;
-
-    const item = this.boss.addContradiction({
-      kind,
-      handNo: this.duel.handNo,
-      detail: { claim: talk.claim, level, ratio, street, line: talk.text },
-    });
-    const windowMs = conf.windowBaseMs + conf.windowPerCharMs * talk.text.length;
-    // deadline 含客户端播放排队时间（思考停顿 + 打字机），点击校验另有 grace
-    const deadline = this.now() + windowMs + 3200;
-    this.openWindow = { id: item.id, deadline, line: talk.text, windowMs };
-
-    events.push({ type: 'contradiction', id: item.id, kind });
-    events.push({ type: 'objection_open', id: item.id, deadline, line: talk.text, windowMs });
-    this.#feed(
-      'contradiction',
-      kind === 'spoken_vs_bet'
-        ? '破绽出现：他的话和注码对不上 —— 抓住它！'
-        : '破绽出现：他的打法前后矛盾 —— 抓住它！',
-    );
-  }
-
-  /** 本街之前，Boss 是否每一街都在示弱（前后矛盾的前半句）。 */
-  #allPriorPassive(street) {
-    const idx = STREET_ORDER.indexOf(street);
-    if (idx <= 0) return false;
-    for (let i = 0; i < idx; i++) {
-      const s = STREET_ORDER[i];
-      if (this.streetAgg[s] !== 'passive') return false;
-    }
-    return true;
   }
 
   // ------------------------------------------------------------ 手牌结算
@@ -306,85 +275,60 @@ export class Battle {
     if (!r) return;
     const pot = r.pot;
     const winner = r.winner;
+    const bossWon = winner === BOSS;
+    const bossLost = winner === PLAYER;
+    const isSplit = winner === 'split';
 
-    // 底池飞向赢家
-    if (winner === 'split') {
+    if (isSplit) {
       events.push({ type: 'pot_move', to: PLAYER, amount: Math.floor(pot / 2) });
       events.push({ type: 'pot_move', to: BOSS, amount: pot - Math.floor(pot / 2) });
     } else {
       events.push({ type: 'pot_move', to: winner, amount: pot });
     }
 
-    const bossWon = winner === BOSS;
-    const bossLost = winner === PLAYER;
-    const isSplit = winner === 'split';
-    const bossFolded = r.type === 'fold' && r.winner === PLAYER;
     const bluffCaught = r.type === 'showdown' && bossLost
       && this.handAggressiveIntents.some((a) => a.intent === 'BLUFF');
-    const playerBluffSuccess = bossFolded && this.playerAggressive;
-    const startStack = this.balance.stacks.boss;
-    const bigPot = pot >= this.balance.bigPotLostRatio * startStack;
-    const allInLost = bossLost && (d.allIn[BOSS] || this.handAggressiveIntents.some((a) => a.action === 'allin' && d.stacks[BOSS] === 0));
-    const allInWon = bossWon && (d.allIn[PLAYER] || d.allIn[BOSS]);
+    const bigPotLost = bossLost && pot >= (this.balance.bigPotLostRatio ?? 0.2) * this.balance.stacks.boss;
+    const allInLost = bossLost && (d.allIn[BOSS] || d.allIn[PLAYER]);
 
-    // 连胜与势头：正向轴（得意/神了）的入口材料
-    if (!isSplit) {
-      this.bossStreak = bossWon ? this.bossStreak + 1 : 0;
-      this.recentHands.push(bossWon ? pot : -pot);
-      while (this.recentHands.length > 5) this.recentHands.shift();
+    // 摊牌记录进 Player Model
+    if (r.type === 'showdown') {
+      this.model.record('showdown', {
+        playerWon: winner === PLAYER,
+        playerAggressive: this.playerAggressive,
+      });
     }
 
-    // 本手 READ 是否“应验”：读了 + （抓到诈唬 或 点破矛盾）
-    if (this.readUsedHand) {
-      const success = bluffCaught || this.exposeHand;
-      this.readStreak = success ? this.readStreak + 1 : 0;
-    }
-
-    if (bossWon) {
-      // —— 赢：回血 / 爬正向轴 ——
-      if (allInWon) this.#fire(events, 'ALL_IN_WON');
-      else if (bigPot) this.#fire(events, 'BIG_POT_WON');
-      if (this.bossStreak === (this.balance.winStreakHands ?? 3)) this.#fire(events, 'WIN_STREAK');
-    } else if (bossLost) {
-      // —— 输：顺风被打断 + 输钱打击（吃 HOT/FLOW 护甲） ——
-      this.#fire(events, 'HAND_LOST');
+    if (bossLost) {
       if (allInLost) this.#fire(events, 'ALL_IN_LOST');
-      else if (bigPot) this.#fire(events, 'BIG_POT_LOST');
-      // —— 心理打击：不吃护甲，被看穿永远疼 ——
+      else if (bigPotLost) this.#fire(events, 'BIG_POT_LOST');
       if (bluffCaught) this.#fire(events, 'BLUFF_CAUGHT');
-      else if (playerBluffSuccess) this.#fire(events, 'PLAYER_BLUFF_SUCCESS');
     }
 
-    if (this.readStreak >= 2) {
-      this.#fire(events, 'CONSECUTIVE_READ_SUCCESS');
-      this.readStreak = 0;
-    }
-
-    // 害怕被认为胆小：弃牌之后，接下来两手会更想打回来
-    if (bossFolded && this.playerAggressive) {
-      this.boss.buffs.push({ skill: 'shame', decisions: 2 });
-    }
-
-    // 赢牌后的得意台词（赌徒赢了不会闭嘴）
+    // 赢牌后的台词
     if (bossWon && !isSplit) {
-      const quip = pickWinQuip(this.boss.state, this.balance.winQuipChance ?? 0.5, this.rng);
+      const quip = this.boss.winQuip();
       if (quip) {
         events.push({ type: 'talk', line: quip });
         this.#feed('talk', quip);
       }
     }
 
-    const winnerLabel = winner === 'split' ? '平分底池'
+    const winnerLabel = isSplit ? '平分底池'
       : winner === PLAYER ? `你赢得 ${pot}`
       : `千面赢得 ${pot}`;
     this.#feed('hand', `第 ${this.handNo} 手 · 底池 ${pot} · ${winnerLabel}`);
 
+    const blind = this.blindFor(this.handNo);
     events.push({
       type: 'hand_end',
       handNo: this.handNo,
       winner,
       pot,
       stacks: { player: d.stacks[PLAYER], boss: d.stacks[BOSS] },
+      effectiveStack: Math.min(d.stacks[PLAYER], d.stacks[BOSS]),
+      blind: { sb: blind.sb, bb: blind.bb },
+      mode: this.mode,
       bluffCaught,
     });
 
@@ -418,18 +362,64 @@ export class Battle {
     if (this.duel.toAct !== PLAYER) throw new GameError('还没轮到你行动', 'NOT_YOUR_TURN');
   }
 
+  /** PRESSURE(0.5池) / HEAVY(1.0池) 的 raise-to 金额（服务端算，客户端只负责显示）。 */
+  #presetTo(frac) {
+    const d = this.duel;
+    const list = d.legal(PLAYER);
+    const aggro = list.find((o) => o.type === 'bet') ?? list.find((o) => o.type === 'raise');
+    if (!aggro) return null;
+    const target = d.currentBet + frac * d.pot;
+    const to = Math.max(aggro.minTo, Math.min(aggro.maxTo, Math.round(target)));
+    return { type: aggro.type, to };
+  }
+
   act(action, amount) {
     this.#requirePlayerTurn();
     const events = [];
     const d = this.duel;
     const preStreet = d.street;
+    const label = String(action ?? '').toLowerCase();
 
-    const { normalized, events: engineEvents } = d.act(PLAYER, { action, amount });
-    events.push(...engineEvents);
-    this.#recordHistory('player', normalized, preStreet);
+    // ---- 预设行动 / 自由尺寸 / 引擎原生行动 ----
+    let engineCmd;
+    let displayAction = label;
+    if (label === 'pressure' || label === 'heavy') {
+      const frac = label === 'pressure'
+        ? (this.balance.sizing.pressureFrac ?? 0.5)
+        : (this.balance.sizing.heavyFrac ?? 1);
+      const preset = this.#presetTo(frac);
+      if (!preset) throw new GameError('当前无法施压（没有下注/加注选项）', 'CANNOT_PRESSURE');
+      engineCmd = { action: preset.type, amount: preset.to };
+    } else if (label === 'bet' || label === 'raise') {
+      if (this.mode !== 'EXECUTION') {
+        throw new GameError('自由下注仅在 EXECUTION 阶段开放', 'NOT_EXECUTION');
+      }
+      engineCmd = { action: label, amount };
+    } else {
+      engineCmd = { action: label, amount };
+    }
+
+    const { normalized, events: engineEvents } = d.act(PLAYER, engineCmd);
+
+    // 行动事件与 history 用玩家视角的动作名（pressure/heavy），Boss 用引擎名
+    const outEvents = engineEvents.map((e) => (
+      e.type === 'action' && displayAction !== normalized.type
+        ? { ...e, action: displayAction }
+        : e
+    ));
+    events.push(...outEvents);
+    this.#recordHistory('player', displayAction, preStreet, normalized.to ?? 0);
+
+    // ---- Player Model 记账（READ→HEAVY 等习惯；先置窗口再消费）----
+    if (displayAction === 'pressure') this.model.record('pressure');
+    this.model.record('action', {
+      action: displayAction,
+      facingBet: (d.currentBet - d.committed[PLAYER]) > 0 || normalized.type === 'call' || normalized.type === 'raise',
+    });
+
     if (normalized.put > 0) this.playerAggressive = true;
-    const actionEvent = engineEvents.find((e) => e.type === 'action');
-    this.lastPlayerAction = { action: normalized.type, allIn: Boolean(actionEvent?.allIn), street: preStreet };
+    const actionEvent = outEvents.find((e) => e.type === 'action');
+    this.lastPlayerAction = { action: displayAction, allIn: Boolean(actionEvent?.allIn), street: preStreet };
 
     if (d.phase !== 'playing') {
       this.#onHandEnd(events);
@@ -439,139 +429,180 @@ export class Battle {
     return { view: this.view(), events };
   }
 
-  /** READ：模糊信息 + 期望方向。每手有限次数。 */
+  // ------------------------------------------------------------ READ
+
+  /**
+   * READ：闪现一条心理碎片（无限次，短冷却）。
+   * 类型（TRUE/NOISE/DISTORTION）与语义标签只在服务端 —— 客户端只拿到 text。
+   */
   read() {
     this.#requirePlayerTurn();
-    if (this.readsLeft <= 0) throw new GameError('这一手的 READ 已经用完', 'NO_READS');
+    const t = this.now();
+    if (t < this.readCooldownUntil) throw new GameError('READ 正在冷却', 'READ_COOLING');
     const events = [];
-    this.readsLeft -= 1;
-    this.readUsedHand = true;
-    const r = this.boss.read({ street: this.duel.street, momentum: this.momentum() });
-    // 最新的在最前（view.reads[0]）
-    this.reads.unshift({ text: r.text, lean: r.lean, leanLabel: r.leanLabel });
-    if (this.reads.length > 3) this.reads.pop();
-    events.push({ type: 'read', text: r.text, lean: r.lean, leanLabel: r.leanLabel });
-    this.#feed('read', r.text);
-    return { view: this.view(), events };
-  }
+    const balance = this.balance;
+    const execution = this.mode === 'EXECUTION';
+    const state = this.boss.state;
+    const intent = this.boss.currentIntent();
 
-  /**
-   * 言语技能：先改变 Boss 的心理/决策权重，再通过他的牌技结算。
-   * 神了(FLOW)免疫全部言语；得意(HOT)效果减半。
-   * @param {'taunt'|'challenge'|'pressure'} skill
-   */
-  speak(skill) {
-    this.#requirePlayerTurn();
-    if (!SPEECH_LABELS[skill]) throw new GameError('没有这个言语技能', 'BAD_SKILL');
-    if ((this.speechLeft[skill] ?? 0) <= 0) throw new GameError('这一手已经用过了', 'NO_CHARGES');
-    const events = [];
-    this.speechLeft[skill] -= 1;
-    const immune = this.boss.speechImmune;
+    const makeOne = (burst) => {
+      const frag = makeFragment({
+        state,
+        intent,
+        equity: this.boss.lastEquity,
+        street: this.duel.street,
+        execution,
+        balance,
+        rng: this.rng,
+      });
+      const ev = {
+        type: 'read_fragment',
+        text: frag.text,
+        flashMs: flashMs(state, balance, execution),
+        burst,
+      };
+      // 碎片流水（只有 text + atHand 下发）
+      this.readFragments.unshift({ text: frag.text, atHand: this.handNo });
+      if (this.readFragments.length > 30) this.readFragments.pop();
+      this.#feed('read', frag.text);
 
-    let result;
-    if (skill === 'challenge') {
-      const c = this.boss.unresolvedContradiction();
-      if (!c) {
-        result = 'whiff';
-      } else if (immune) {
-        // 神了：根本听不进去 —— 矛盾保留，等他凉下来还能追问
-        result = 'resist';
-        this.#feed('speech', '质疑被无视——他根本听不进去（破绽还留着）');
-      } else {
-        const t = this.#fire(events, 'LANGUAGE_WEAKNESS_HIT');
-        result = t ? 'hit' : 'resist';
-        c.resolved = true;
-        if (this.openWindow?.id === c.id) this.openWindow = null;
-        if (t) {
-          this.boss.markExposed();
-          this.exposeHand = true;
-          this.#feed('objection', '追问命中！他的防线裂开了');
-        } else {
-          this.#feed('speech', '追问命中了矛盾，但他硬扛住了');
-        }
-      }
-    } else {
-      const eff = (this.balance.speechEffects[skill].stateScale?.[this.boss.state] ?? 1)
-        * this.boss.speechScale;
-      if (eff <= 0) {
-        result = 'resist'; // 免疫：不挂 Buff
-        this.#feed('speech', `你${SPEECH_LABELS[skill]}了他——他根本没在听`);
-      } else {
-        result = eff >= 1 ? 'hit' : 'resist';
-        this.boss.applySpeechBuff(skill);
-        this.#feed('speech', `你${SPEECH_LABELS[skill]}了他——${result === 'hit' ? '他吃到了这一击' : '他表面不为所动'}`);
-      }
-    }
-
-    const line = this.boss.react(skill, result);
-    events.push({ type: 'speech', skill, result, line });
-    this.#feed('talk', line);
-    return { view: this.view(), events };
-  }
-
-  /**
-   * 看穿！窗口内点击成功即命中（窗口只在检测到真实矛盾时开启）。
-   */
-  object(id) {
-    const events = [];
-    const w = this.openWindow;
-    const numId = Number(id);
-    const fail = (reason) => {
-      // 窗口指向的矛盾已经没了/过期被替换 —— 窗口本身作废，避免客户端死等
-      if (reason === 'stale' || reason === 'resolved') this.openWindow = null;
-      return { view: this.view(), events, ok: false, reason };
+      // 证据链：只有 TRUE 带标签可能成链
+      const crack = this.evidence.add(frag, this.handNo);
+      return { ev, crack };
     };
 
-    if (!w || w.id !== numId) return fail('stale');
-    const c = this.boss.findContradiction(numId);
-    if (!c || c.resolved) return fail('resolved');
-    const grace = this.balance.contradiction.graceMs;
-    if (this.now() > w.deadline + grace) return fail('late');
+    const first = makeOne(false);
+    events.push(first.ev);
+    let crack = first.crack;
 
-    c.resolved = true;
-    this.openWindow = null;
-    this.boss.markExposed();
-    this.exposeHand = true;
+    // EXECUTION：信息量更高（25% 双发）
+    if (execution && this.rng() < (balance.read.burstChanceInExecution ?? 0.25)) {
+      const second = makeOne(true);
+      events.push(second.ev);
+      if (!crack) crack = second.crack;
+    }
 
-    const t = this.#fire(events, 'CONTRADICTION_EXPOSED');
-    events.unshift({
-      type: 'objection_result',
-      id: c.id,
-      success: true,
-      kind: c.kind,
-      transition: t ? { from: t.from, to: t.to } : null,
-      hint: t?.hint ?? null,
-    });
-    this.#feed('objection', t
-      ? `看穿了！${MOODS[t.from]} → ${MOODS[t.to]}`
-      : '看穿了！他嘴硬了一句，但防线松了');
-    return { view: this.view(), events, ok: true };
+    this.readCooldownUntil = t + (balance.read.cooldownMs ?? 400);
+    this.model.record('read');
+
+    if (crack) this.#emitCrack(events, crack);
+    return { view: this.view(), events };
   }
 
-  /** 重开一场 Boss 战。 */
+  #emitCrack(events, crack) {
+    this.cracks.push({ ...crack, result: null });
+    this.crack = crack;
+    events.push({
+      type: 'crack',
+      id: crack.id,
+      kind: crack.kind,
+      evidence: crack.evidence,
+      strength: crack.strength,
+      critical: crack.critical,
+    });
+    this.#feed('crack', `CRACK! [${crack.kind}] ${crack.evidence.join(' + ')}${crack.critical ? ' · CRITICAL TELL' : ''}`);
+  }
+
+  // ------------------------------------------------------------ GOTCHA
+
+  /**
+   * GOTCHA：押上你的判断。
+   * BLUFF ↔ intent∈{BLUFF,PROBE}；STRONG ↔ intent∈{VALUE,TRAP,CONTROL}。
+   * 正确 → EXECUTION；错误 → COUNTER（Boss 本手攻击暴涨）。
+   */
+  gotcha(guess) {
+    this.#requirePlayerTurn();
+    const events = [];
+    const g = String(guess ?? '').toUpperCase();
+    if (g !== 'BLUFF' && g !== 'STRONG') throw new GameError('只能押 BLUFF 或 STRONG', 'BAD_GUESS');
+    if (!this.crack || !this.crackOpen()) throw new GameError('还没有可用的 CRACK', 'NO_CRACK');
+    const intent = this.boss.currentIntent();
+    if (!intent) throw new GameError('Boss 还没有可判定的行动', 'NO_INTENT');
+
+    const bossSide = intent === 'BLUFF' || intent === 'PROBE' ? 'BLUFF' : 'STRONG';
+    const correct = g === bossSide;
+
+    // 兑现：CRACK 被使用（保留记录）
+    const entry = this.cracks.find((c) => c.id === this.crack.id);
+    if (entry) entry.result = { guess: g, correct };
+    this.crack = null;
+    this.model.record('gotcha', { correct });
+
+    events.push({ type: 'gotcha_result', guess: g, correct, mode: correct ? 'EXECUTION' : 'COUNTER' });
+
+    if (correct) {
+      this.mode = 'EXECUTION';
+      this.gotchaStreak += 1;
+      this.#fire(events, 'GOTCHA_HIT');
+      if (this.gotchaStreak >= (this.balance.gotcha?.streakForTilt ?? 2)) {
+        this.#fire(events, 'GOTCHA_STREAK');
+        this.gotchaStreak = 0;
+      }
+      this.#feed('gotcha', `GOTCHA! 判断正确（${g}）→ EXECUTION 自由下注开启`);
+    } else {
+      this.mode = 'COUNTER';
+      this.gotchaStreak = 0;
+      this.boss.setPhaseBuff({ ...this.balance.counter });
+      this.#feed('gotcha', `GOTCHA 判断错误（${g}）→ COUNTER，他反扑了`);
+    }
+    events.push({ type: 'mode', mode: this.mode });
+    this.#feed('mode', this.mode === 'EXECUTION' ? 'EXECUTION · 自由下注阶段' : 'COUNTER · Boss 高压阶段');
+    return { view: this.view(), events };
+  }
+
+  /** 未使用的 CRACK 且 Boss 有可判定的 intent → GOTCHA 可发动。 */
+  crackOpen() {
+    return Boolean(this.crack) && Boolean(this.boss.currentIntent());
+  }
+
+  // ------------------------------------------------------------ 重开
+
   newGame() {
     const events = [];
-    this.balance = loadBalance(); // 顺便热加载配置
+    this.balance = loadBalance(); // 热加载配置
     this.duel = new Duel({
       stacks: [this.balance.stacks.player, this.balance.stacks.boss],
-      smallBlind: this.balance.blinds.small,
-      bigBlind: this.balance.blinds.big,
+      smallBlind: 10,
+      bigBlind: 20,
     });
     this.boss = new Boss({ balance: this.balance, rng: this.rng });
+    this.model = new PlayerModel();
     this._freshFields();
-    this.#feed('system', `战斗重新开始 · ${this.balance.personality.name}`);
+    this.#feed('system', `战斗重新开始 · ${this.balance.personality.name} · ${this.balance.stacks.player} vs ${this.balance.stacks.boss}`);
     this.#beginHand(events);
     return { view: this.view(), events };
   }
 
   // ------------------------------------------------------------ 视图
 
+  #viewLegal() {
+    const d = this.duel;
+    const base = mapLegal(d.legal(PLAYER));
+    // PRESSURE / HEAVY 预设：服务端算好 raise-to
+    const pressure = this.#presetTo(this.balance.sizing.pressureFrac ?? 0.5);
+    const heavy = this.#presetTo(this.balance.sizing.heavyFrac ?? 1);
+    base.pressure = Boolean(pressure);
+    base.heavy = Boolean(heavy);
+    base.pressureTo = pressure ? pressure.to : 0;
+    base.heavyTo = heavy ? heavy.to : 0;
+    // 自由尺寸字段照常给出；客户端必须用 mode==='EXECUTION' 门禁
+    return base;
+  }
+
   view() {
     const d = this.duel;
     const playing = this.phase === 'playing' && d.phase === 'playing';
     const playerTurn = playing && d.toAct === PLAYER;
-    const win = this.openWindow && this.now() <= this.openWindow.deadline + this.balance.contradiction.graceMs
-      ? this.openWindow
+    const blind = this.blindFor(this.handNo || 1);
+
+    // 当前牌型（flop 起才有 5 张可评）
+    let handName = null;
+    if (d.hole[PLAYER].length === 2 && d.board.length >= 3) {
+      handName = evaluate([...d.hole[PLAYER], ...d.board]).nameZh;
+    }
+
+    const openCrack = this.crack && this.crackOpen() && this.mode === 'NORMAL'
+      ? this.crack
       : null;
 
     return {
@@ -582,33 +613,43 @@ export class Battle {
       board: d.board.slice(),
       button: d.button,
       toAct: playing ? d.toAct : null,
+      blind: { sb: blind.sb, bb: blind.bb, tier: blind.tier, nextUp: blind.nextUp },
+      effectiveStack: Math.min(d.stacks[PLAYER], d.stacks[BOSS]),
+      mode: this.mode,
       player: {
         chips: d.stacks[PLAYER],
         bet: d.committed[PLAYER],
         hole: d.hole[PLAYER].slice(),
         toCall: Math.max(0, d.currentBet - d.committed[PLAYER]),
-        legal: playerTurn ? mapLegal(d.legal(PLAYER)) : emptyLegal(),
-        readsLeft: this.readsLeft,
-        speech: { ...this.speechLeft },
-        // 手里有可追打的破绽（质疑按钮的点亮依据；不泄露任何矛盾细节）
-        canChallenge: Boolean(this.boss.unresolvedContradiction()),
+        handName,
+        legal: playerTurn ? this.#viewLegal() : emptyLegal(),
+        readCooldownUntil: this.readCooldownUntil,
       },
       boss: {
         chips: d.stacks[BOSS],
         bet: d.committed[BOSS],
-        hole: d.phase === 'handover' && d.result?.type === 'showdown' ? d.hole[BOSS].slice() : null,
+        hole: null, // 摊牌信息只在 showdown 事件里
         state: this.boss.state,
         face: this.boss.face,
         mood: this.boss.mood,
-        stateHint: this.boss.stateHint, // 当前状态的打法含义（横幅/刻度用）
-        effects: this.#effects(),       // 言语命中的倾向贴纸
-        lastAction: this.lastBossAction, // 含 street：READ 时机高亮的依据
+        stateHint: this.boss.stateHint,
+        lastAction: this.lastBossAction,
         lastLine: this.lastLine,
       },
-      // 破绽窗口（原异议）：只有 id/deadline/line，真假由服务端点击时判定
-      objection: win ? { id: win.id, deadline: win.deadline, line: win.line } : null,
-      reads: this.reads.slice(),
+      gotcha: openCrack
+        ? { id: openCrack.id, kind: openCrack.kind, evidence: openCrack.evidence.slice() }
+        : null,
+      cracks: this.cracks.map((c) => ({
+        id: c.id,
+        kind: c.kind,
+        evidence: c.evidence.slice(),
+        strength: c.strength,
+        critical: c.critical,
+        handNo: c.handNo,
+        result: c.result ?? null,
+      })),
       history: this.history.slice(),
+      readFragments: this.readFragments.slice(),
       feed: this.feed.slice(),
     };
   }

@@ -1,14 +1,19 @@
 /**
- * app.js — 《allin》Boss 战前端主逻辑
+ * app.js — 《allin》Boss 战前端主逻辑（v3）
  *
  * 结构：状态机（S）+ 串行事件队列（pump）+ 全量渲染（render）+ 交互。
- * 契约：docs/PROTOCOL.md —— 每个 POST 返回 { view, events }；
+ * 契约：docs/PROTOCOL.md（v3）—— 每个 POST 返回 { view, events }；
  * view 是权威快照（播完事件后整体渲染），events 串行按节奏播放，播放期间锁定行动栏。
  *
+ * v3 核心循环：打牌 → READ 碎片 → 证据链 → CRACK → GOTCHA（BLUFF/STRONG）
+ *   → 对 = EXECUTION（自由滑杆 + 高速 READ）/ 错 = COUNTER（Boss 反扑）→ 真实筹码结算。
+ *
  * 防御性原则：
- * - 任何字段缺失都不崩（view.objection=null、history 空、未知事件 → console.warn 并跳过）；
- * - 事件播放单条 try/catch，异常路径最终一定解锁行动栏（pump 的 finally）；
- * - view 响应做 JSON 深拷贝，避免与事件播放中的可变状态共享引用。
+ * - 任何字段缺失都不崩（blind/gotcha/cracks/readFragments/legal 缺失 → 默认值）；
+ * - 事件播放单条 try/catch，异常路径最终一定解锁行动栏（pump 的 finally + syncLock）；
+ * - render 子步骤逐个 try/catch，一个面板炸了不影响其它面板；
+ * - view 响应做 JSON 深拷贝，避免与事件播放中的可变状态共享引用；
+ * - read_fragment 闪现 fire-and-forget，绝不阻塞事件队列。
  */
 import { $, el, clear } from './dom.js';
 import { CardRow } from './cards.js';
@@ -19,37 +24,35 @@ import * as fx from './effects.js';
 
 /* ================================================================= 常量 */
 
-const STATE_LABEL = {
-  FLOW: '神了', HOT: '得意', CALM: '冷静', SHAKEN: '动摇', TILT: '上头', BREAKING: '崩坏',
-};
-// 情绪刻度顺序（与服务端 mental.js SCALE 一致）：下标变大 = 向坏（▼），变小 = 回血（▲）
-const STATE_ORDER = ['FLOW', 'HOT', 'CALM', 'SHAKEN', 'TILT', 'BREAKING'];
+const STATE_LABEL = { CALM: '冷静', SHAKEN: '动摇', TILT: '上头' };
+const STATE_FACE = { CALM: '😏', SHAKEN: '😳', TILT: '😡' };
 const STREET_LABEL = { preflop: '翻牌前', flop: '翻牌圈', turn: '转牌圈', river: '河牌圈' };
-const ACTION_LABEL = { check: '过牌', call: '跟注', bet: '下注', raise: '加注', fold: '弃牌', allin: '全下' };
-const SPEECH_LABEL = { taunt: '挑衅', challenge: '质疑', pressure: '施压' };
-const SPEECH_RESULT = { hit: '命中', resist: '被抵挡', whiff: '落空' };
-const KIND_LABEL = {
-  talk: '台词', read: 'READ', mental: '心理', contradiction: '矛盾',
-  objection: '异议', speech: '言语', hand: '结算', system: '系统',
+const ACTION_LABEL = {
+  check: '过牌', call: '跟注', bet: '下注', raise: '加注',
+  fold: '弃牌', allin: '全下', pressure: '加压', heavy: '重压',
 };
+const CRACK_KIND_LABEL = { WEAKNESS: '弱点链', STRENGTH: '强牌链', CRITICAL: '致命破绽' };
+const EVIDENCE_LABEL = {
+  wants_fold: '想让你弃', fear_call: '怕你跟', weak_hand: '牌弱', strong_hand: '牌强',
+  draw: '在听牌', missed_board: '错过牌面', trap: '在设套', overconfidence: '过度自信',
+};
+const FEED_LABEL = {
+  talk: '台词', read: 'READ', crack: 'CRACK', gotcha: 'GOTCHA', mode: '模式',
+  blind: '盲注', hand: '结算', model: '针对', system: '系统', mental: '情绪',
+};
+const MODE_LABEL = { NORMAL: 'NORMAL', EXECUTION: 'EXECUTION', COUNTER: 'COUNTER' };
+const MODE_HINT = { NORMAL: '正常对抗', EXECUTION: '自由下注 · 高速 READ', COUNTER: 'Boss 反扑中' };
 const CAUSE_LABEL = {
-  BLUFF_CAUGHT: '诈唬被抓', OBJECTION: '谎言被戳穿', TAUNT: '被挑衅激怒',
-  CHALLENGE: '遭到质疑', PRESSURE: '压力失控', SPEECH: '言语攻势',
+  BLUFF_CAUGHT: '诈唬被抓', GOTCHA_HIT: '判断命中', GOTCHA_STREAK: '连续被猜中',
+  BIG_POT_LOST: '输掉大底池', ALL_IN_LOST: '全下失利',
 };
-const CONTRADICTION_LABEL = {
-  spoken_vs_bet: '言行不一：说的和下的注对不上',
-  behavior: '行为异常：与此前模式矛盾',
-};
-const REASON_LABEL = {
-  stale: '窗口已关闭', resolved: '已经提过了', late: '太慢了，话已说完',
-  window_closed: '窗口已关闭', expired: '超时',
-  not_found: '窗口不存在', already: '已经提过了',
-};
+const GUESS_LABEL = { BLUFF: 'BLUFF', STRONG: 'STRONG' };
+const MODES = new Set(['NORMAL', 'EXECUTION', 'COUNTER']);
 
-const FEED_CAP = 160;          // 单个列表 DOM 上限（服务端另有 100/60 截断）
-const RING_CIRCUM = 125.66;    // 2πr, r=20
+const FEED_CAP = 160;          // 单个列表 DOM 上限（服务端另有 30/60 截断）
 const POLL_MS = 1600;
 const POLL_MAX = 20;
+const READ_TICK_MS = 80;       // READ 冷却转圈刷新间隔
 
 const fmt = (n) => {
   const v = Math.round(Number(n) || 0);
@@ -63,6 +66,8 @@ const parseNum = (s) => {
 const clone = (obj) => {
   try { return JSON.parse(JSON.stringify(obj)); } catch { return obj; }
 };
+const arr = (v) => (Array.isArray(v) ? v : []);
+const str = (v, d = '') => (typeof v === 'string' ? v : d);
 
 /* ================================================================= 状态 */
 
@@ -72,13 +77,9 @@ const S = {
   pumping: false,         // 事件队列播放中
   awaiting: false,        // 请求在途
 
-  objection: null,        // { id, deadline, line, windowMs } 活跃的异议窗口
-  objTimer: null,         // 倒计时 interval id（过期即清理）
-  objectionPending: false,// 异议请求在途
-
-  showdown: null,         // 最近一次 showdown { hands, split }，跨渲染保留 winner/dim
+  showdown: null,         // 最近一次 showdown { hands, split }
   board: [],              // 播放中的公共牌（终态由 view.board 校正）
-  playHand: 0,            // 播放语境下的手数（live history 用）
+  playHand: 0,            // 播放语境下的手数
   playStreet: '',         // 播放语境下的街
   liveBet: { 0: 0, 1: 0 },// 播放语境下的本街投入（betflag 用）
 
@@ -88,38 +89,54 @@ const S = {
   raiseTouched: false,    // 用户是否动过滑杆
   raiseValue: 0,
 
-  guideOpen: false,       // 新手引导浮层
-  guideIndex: 0,
-  guideClosedOnce: false, // 关闭过一次后才开始发上下文小提示
-  usedRead: false,        // 本局已用过 READ（首手提示的触发条件）
-  hintReadDone: false,
-  pendingLean: null,      // 最近一次 READ 的倾向标签（「你信吗？」问句用）
+  gotchaOpen: false,      // GOTCHA 二选一确认条是否展开
+  gotchaPosting: false,   // gotcha 请求在途
+  pendingGotchaId: null,  // 在途 gotcha 对应的 CRACK id（用于把结果挂回面板）
 
-  polls: 0,               // 静默刷新次数（有界，防止无限轮询）
+  crackEntries: {},       // id → 证据链条目（面板行重建用）
+  crackResults: {},       // id → { guess, correct }（会话内记忆；服务端给 used 字段时优先）
+
+  readUntil: 0,           // READ 冷却截止（ms）
+  readWindowMs: 0,        // 转圈窗口（= 刚进入冷却时的剩余时长）
+  readTimer: null,        // 冷却转圈 interval id
+
+  chipsRef: 0,            // 筹码堆分母：本局筹码总量（chips + pot 恒定）
+
+  guideOpen: false,
+  guideIndex: 0,
+  guideClosedOnce: false,
+  hintReadDone: false,    // 「先 READ」一次性提示
+  hintGotchaShown: false, // 「GOTCHA 解锁」一次性提示
+
+  polls: 0,
   pollTimer: null,
 };
 
 /** DOM 引用（bindDom 时赋值）。 */
 const D = {
   app: null, bossZone: null, boss: null, bossAvatar: null, bossFace: null, bossMood: null,
-  bossChips: null, bossBet: null, bossDealer: null, bossHole: null, bossHandname: null, bossAct: null,
-  bubble: null, bubbleText: null, bubbleCaret: null,
-  objection: null, objRingFg: null, objMs: null, btnObjection: null, objectionLine: null,
+  bossChips: null, bossStackFill: null, bossBet: null, bossDealer: null,
+  bossHole: null, bossHandname: null, bossAct: null,
+  bubble: null, bubbleText: null, bubbleCaret: null, fragFlash: null,
+  hudHand: null, hudTocall: null, hudEff: null, hudBlind: null, hudBlindNext: null,
+  hudMode: null, hudMood: null, stateHint: null,
   streetBadge: null, board: null, pot: null, potValue: null,
   playerZone: null, playerHole: null, playerHandname: null, playerDealer: null,
-  playerChips: null, playerBet: null, playerTocall: null,
-  handPill: null, history: null, talk: null, readLeftPill: null, readLatest: null, reads: null, important: null,
+  playerChips: null, playerStackFill: null, playerBet: null, playerTocall: null,
+  handPill: null, history: null, fragPill: null, fragments: null,
+  crackPill: null, cracks: null, battlelog: null,
   abStatus: null, abStatusText: null,
-  btnCheck: null, checkLabel: null, btnCall: null, callLabel: null, btnFold: null,
-  btnAllin: null, allinLabel: null, raiseBox: null, raiseSlider: null, raiseAmt: null,
+  btnFold: null, btnCallcheck: null, callcheckLabel: null,
+  btnPressure: null, pressureTo: null, btnHeavy: null, heavyTo: null,
+  btnAllin: null, allinLabel: null,
+  raiseBox: null, raiseSlider: null, raiseAmt: null,
   raiseLabelTop: null, raiseBtnLabel: null, btnRaise: null,
-  btnRead: null, readBadge: null, btnTaunt: null, tauntLeft: null,
-  btnChallenge: null, challengeLeft: null, btnPressure: null, pressureLeft: null,
+  mentalHint: null, btnRead: null, readRing: null, readCd: null,
+  btnGotcha: null, gotchaConfirm: null,
+  btnGuessBluff: null, btnGuessStrong: null, btnGuessCancel: null,
   end: null, endCard: null, endHeart: null, endKicker: null, endTitle: null, endSub: null, btnAgain: null,
   guide: null, guideStep: null, guidePages: null, guideDots: null,
   guidePrev: null, guideSkip: null, guideNext: null, btnGuide: null,
-  stateScale: null, stateScaleSteps: null, stateHint: null,
-  bossEffects: null, mentalHint: null, readLean: null,
 };
 
 let boardRow = null;
@@ -149,28 +166,66 @@ function statusFor(view, busy) {
   return ['结算中…', 'wait'];
 }
 
+const modeOf = (view) => {
+  const m = str(view?.mode, 'NORMAL');
+  return MODES.has(m) ? m : 'NORMAL';
+};
+
 /* ====================================================== 信息栏：行构造 */
 
 function historyNode(h) {
   const isBoss = h.actor === 1 || h.actor === 'boss';
   return el('div', { class: 'hrow' }, [
     el('span', { class: 'hrow__hand num', text: `#${h.handNo ?? '—'}` }),
-    el('span', { class: 'hrow__street', text: STREET_LABEL[h.street] ?? (h.street ?? '') }),
+    el('span', { class: 'hrow__street', text: STREET_LABEL[h.street] ?? str(h.street) }),
     el('span', { class: `hrow__who ${isBoss ? 'is-boss' : 'is-me'}`, text: isBoss ? 'Boss' : '你' }),
-    el('span', { class: 'hrow__act', text: ACTION_LABEL[h.action] ?? (h.action ?? '—') }),
+    el('span', { class: 'hrow__act', text: ACTION_LABEL[h.action] ?? str(h.action, '—') }),
     Number(h.amount) > 0 ? el('span', { class: 'hrow__amt num', text: fmt(h.amount) }) : null,
   ]);
 }
 
-function feedNode(item) {
-  const kind = typeof item?.kind === 'string' ? item.kind : 'system';
-  const text = item?.text ?? '';
-  if (kind === 'talk') return el('div', { class: 'trow', text });
-  if (kind === 'read') return el('div', { class: 'rrow', text });
+/** READ Fragments 面板行：纯文本（类型/标签绝不下发，也不展示）。 */
+function fragmentNode(f) {
+  return el('div', { class: 'frow', text: str(f?.text, '……') || '……' });
+}
+
+/** Battle Log 行（feed 中 read/crack 有自己的面板，其余全部进这里）。 */
+function logNode(item) {
+  const kind = str(item?.kind, 'system');
   return el('div', { class: `irow irow--${kind}` }, [
-    el('span', { class: 'irow__kind', text: KIND_LABEL[kind] ?? kind }),
-    el('span', { text }),
+    el('span', { class: 'irow__kind', text: FEED_LABEL[kind] ?? kind }),
+    el('span', { text: str(item?.text) }),
   ]);
+}
+
+/** CRACK Feedback 面板行：kind + 证据标签胶囊 + strength 点数 + gotcha 结果。 */
+function crackNode(c) {
+  const kind = str(c?.kind, 'WEAKNESS');
+  const strength = clamp(Math.round(Number(c?.strength) || 0), 0, 9);
+  const result = c?.result ?? c?.used ?? S.crackResults[c?.id] ?? null;
+  const kids = [
+    el('span', { class: `crow__kind crow__kind--${kind}`, text: CRACK_KIND_LABEL[kind] ?? kind }),
+    el('span', {
+      class: 'crow__str',
+      title: `证据强度 ${strength}`,
+      text: `${'●'.repeat(strength)}${'○'.repeat(Math.max(0, 4 - strength))}`,
+    }),
+    c?.critical ? el('span', { class: 'crow__crit', text: 'CRITICAL' }) : null,
+    c?.handNo != null ? el('span', { class: 'crow__hand num', text: `#${c.handNo}` }) : null,
+  ];
+  const evid = el('div', { class: 'crow__evs' },
+    arr(c?.evidence).map((tag) => el('span', {
+      class: 'crow__ev',
+      text: EVIDENCE_LABEL[tag] ?? (typeof tag === 'string' ? tag : '…'),
+    })));
+  const resNode = result
+    ? el('div', { class: `crow__res ${result.correct ? 'is-right' : 'is-wrong'}` },
+      [`GOTCHA ${GUESS_LABEL[result.guess] ?? result.guess} → ${result.correct ? '判断正确' : '判断失误'}`])
+    : null;
+  return el('div', {
+    class: 'crow',
+    dataset: { id: String(c?.id ?? '') },
+  }, [el('div', { class: 'crow__head' }, kids), evid, resNode]);
 }
 
 function appendCapped(host, node) {
@@ -179,6 +234,14 @@ function appendCapped(host, node) {
   host.appendChild(node);
   while (host.children.length > FEED_CAP) host.firstChild.remove();
   if (atBottom) host.scrollTop = host.scrollHeight;
+}
+
+/** 最新在上的列表：头部插入。 */
+function prependCapped(host, node) {
+  if (!host || !node) return;
+  host.insertBefore(node, host.firstChild);
+  while (host.children.length > FEED_CAP) host.lastChild.remove();
+  host.scrollTop = 0;
 }
 
 function fillFeed(host, nodes) {
@@ -190,29 +253,42 @@ function fillFeed(host, nodes) {
   host.scrollTop = atBottom || nodes.length < 2 ? host.scrollHeight : prevScroll;
 }
 
-function updateReadLatest(text, { flash = false } = {}) {
-  const node = D.readLatest;
-  if (!node) return;
-  if (!text) {
-    node.classList.add('is-empty');
-    node.textContent = '尚未进行 READ。';
-    node.dataset.text = '';
-    return;
-  }
-  if (node.dataset.text === text) return; // 打字机刚写完的同一条不重复高亮
-  cancelTypewrite(node);
-  node.dataset.text = text;
-  node.classList.remove('is-empty');
-  node.textContent = text;
-  if (flash) flashReadLatest();
+/** 最新在上的列表整体重绘（用户翻看旧内容时保留位置，否则钉在顶部）。 */
+function fillTop(host, nodes) {
+  if (!host) return;
+  const keepScroll = host.scrollTop > 48;
+  const prevScroll = host.scrollTop;
+  clear(host);
+  for (const n of nodes) host.appendChild(n);
+  host.scrollTop = keepScroll ? prevScroll : 0;
 }
 
-function flashReadLatest() {
-  const node = D.readLatest;
-  node.classList.remove('is-flash');
-  void node.offsetWidth;
-  node.classList.add('is-flash');
-  setTimeout(() => node.classList.remove('is-flash'), 1500);
+function updateFragPill() {
+  if (!D.fragPill) return;
+  D.fragPill.textContent = `${D.fragments?.children.length ?? 0} 条`;
+}
+
+function updateCrackPill(view) {
+  if (!D.crackPill) return;
+  const armed = Boolean(view?.gotcha);
+  const n = arr(view?.cracks).length;
+  D.crackPill.textContent = armed ? 'GOTCHA 可发动 ⚡' : n > 0 ? `${n} 条链` : '未解锁';
+  D.crackPill.classList.toggle('is-on', armed);
+}
+
+/* ================================================= READ 碎片闪现（不阻塞队列） */
+
+function showFragmentFlash(text, flashMs, exec) {
+  const host = D.fragFlash;
+  if (!host || !text) return;
+  const node = el('div', { class: `fragflash__line${exec ? ' is-exec' : ''}`, text });
+  host.appendChild(node);
+  while (host.children.length > 3) host.firstChild.remove();
+  // flashMs 后自行淡出移除 —— 与事件队列完全解耦
+  setTimeout(() => {
+    node.classList.add('is-out');
+    setTimeout(() => node.remove(), 460);
+  }, flashMs);
 }
 
 /* ============================================================== 渲染 */
@@ -223,31 +299,37 @@ function render(view) {
 
   // 播放语境与权威快照对齐（供下一轮事件播放期间的 live 更新使用）
   S.playHand = Number(view.handNo) || S.playHand;
-  S.playStreet = typeof view.street === 'string' ? view.street : S.playStreet;
+  S.playStreet = str(view.street, S.playStreet);
   S.liveBet = {
     0: Math.round(Number(view.player?.bet) || 0),
     1: Math.round(Number(view.boss?.bet) || 0),
   };
 
-  renderBoss(view);
-  renderBoard(view);
-  renderCenter(view);
-  renderPlayer(view);
-  renderSidebar(view);
-  renderObjectionFromView(view);
-  renderActionbar(view);
-  renderPhase(view);
-  maybeContextHints();
+  for (const step of [
+    renderBoss, renderBoard, renderHud, renderPlayer, renderStacks,
+    renderSidebar, renderActionbar, renderPhase,
+  ]) {
+    try {
+      step(view);
+    } catch (err) {
+      console.warn(`[渲染] ${step.name} 失败`, err);
+    }
+  }
+  try {
+    maybeContextHints();
+  } catch {
+    /* 提示失败不影响渲染 */
+  }
 }
 
 function handOf(seat) {
-  const hands = Array.isArray(S.showdown?.hands) ? S.showdown.hands : [];
+  const hands = arr(S.showdown?.hands);
   return hands.find((h) => h?.seat === seat) ?? null;
 }
 
 function holeSpecs(hole, seat) {
   const sh = handOf(seat);
-  return (Array.isArray(hole) ? hole : []).map((card) => ({
+  return arr(hole).map((card) => ({
     card,
     down: false,
     winner: Boolean(sh?.winner),
@@ -283,11 +365,11 @@ function setBetFlag(node, amount) {
 
 function renderBoss(view) {
   const boss = view.boss ?? {};
-  const stateName = typeof boss.state === 'string' ? boss.state : 'CALM';
-  D.bossZone.dataset.state = stateName;
+  const stateName = str(boss.state, 'CALM');
+  if (STATE_LABEL[stateName]) D.bossZone.dataset.state = stateName;
 
-  if (boss.face) D.bossFace.textContent = boss.face;
-  D.bossMood.textContent = boss.mood ?? STATE_LABEL[stateName] ?? stateName;
+  D.bossFace.textContent = str(boss.face, STATE_FACE[stateName] ?? '😏');
+  D.bossMood.textContent = str(boss.mood, STATE_LABEL[stateName] ?? stateName);
   D.bossChips.textContent = fmt(boss.chips ?? 0);
   setBetFlag(D.bossBet, boss.bet);
   D.bossDealer.hidden = view.button !== 1;
@@ -302,20 +384,17 @@ function renderBoss(view) {
     D.bossAct.hidden = true;
   }
 
-  renderEffects(boss);
-
   // 台词气泡：无打字进行时才整体替换（打字机由事件驱动）
-  const line = typeof boss.lastLine === 'string' ? boss.lastLine : '';
+  const line = str(boss.lastLine);
   if ((D.bubbleText.dataset.line ?? '') !== line) {
     cancelTypewrite(D.bubbleText);
     D.bubbleText.textContent = line;
     D.bubbleText.dataset.line = line;
     D.bubbleCaret.classList.remove('is-on');
   }
-  if (!S.objection) D.bubble.classList.remove('is-hot');
 
   const hole = boss.hole;
-  if (Array.isArray(hole) && hole.length > 0) {
+  if (arr(hole).length > 0) {
     bossRow.render(holeSpecs(hole, 1));
   } else {
     bossRow.render([{ card: null, down: true }, { card: null, down: true }]);
@@ -330,86 +409,58 @@ function renderBoard(view) {
   }
 }
 
-function renderCenter(view) {
-  const street = typeof view.street === 'string' ? view.street : '';
-  D.streetBadge.textContent = STREET_LABEL[street] ?? street ?? '—';
-  D.streetBadge.dataset.street = street;
+/** 牌桌上方窄 HUD：牌型 / Call Cost / Effective Stack / 盲注 / 模式 / 三状态情绪。 */
+function renderHud(view) {
+  const p = view.player ?? {};
+  const boss = view.boss ?? {};
+  const playing = view.phase === 'playing';
+
+  D.hudHand.textContent = str(p.handName) || '—';
+
+  const toCall = Math.round(Number(p.toCall) || 0);
+  if (playing) {
+    D.hudTocall.textContent = toCall > 0
+      ? `跟 ${fmt(toCall)}`
+      : p.legal?.check === true ? '可过牌' : '—';
+  } else {
+    D.hudTocall.textContent = '—';
+  }
+
+  const effFallback = Math.min(Math.round(Number(p.chips) || 0), Math.round(Number(boss.chips) || 0));
+  const eff = Number(view.effectiveStack);
+  D.hudEff.textContent = fmt(Number.isFinite(eff) ? eff : effFallback);
+
+  const blind = (view.blind && typeof view.blind === 'object') ? view.blind : {};
+  D.hudBlind.textContent = Number(blind.sb) > 0 && Number(blind.bb) > 0
+    ? `${fmt(blind.sb)}/${fmt(blind.bb)}`
+    : '—';
+  const nextUp = str(blind.nextUp);
+  D.hudBlindNext.textContent = nextUp || '—';
+  D.hudBlindNext.title = str(blind.tier);
+  D.hudBlind.title = str(blind.tier);
+
+  const mode = modeOf(view);
+  D.hudMode.dataset.mode = mode;
+  D.hudMode.textContent = MODE_LABEL[mode];
+  D.hudMode.title = `${MODE_LABEL[mode]} · ${MODE_HINT[mode]}`;
+  D.app.dataset.mode = mode;
+
+  const stateName = str(boss.state, 'CALM');
+  for (const cell of D.hudMood.children) {
+    cell.classList.toggle('is-active', cell.dataset.state === stateName);
+  }
+  const hint = str(boss.stateHint, '…');
+  D.stateHint.textContent = hint || '…';
+  D.stateHint.title = hint;
+
+  D.streetBadge.textContent = STREET_LABEL[view.street] ?? str(view.street, '—');
+  D.streetBadge.dataset.street = str(view.street);
   D.potValue.textContent = fmt(view.pot ?? 0);
   D.playerDealer.hidden = view.button !== 0;
   D.bossDealer.hidden = view.button !== 1;
 
-  // 情绪刻度：当前格点亮 + 打法含义
-  const state = typeof view.boss?.state === 'string' ? view.boss.state : 'CALM';
-  if (D.stateScaleSteps) {
-    for (const step of D.stateScaleSteps.children) {
-      step.classList.toggle('is-active', step.dataset.state === state);
-    }
-  }
-  const hint = typeof view.boss?.stateHint === 'string' ? view.boss.stateHint : '';
-  if (D.stateHint) {
-    D.stateHint.textContent = hint || '—';
-    D.stateHint.title = hint;
-  }
-
-  const playing = view.phase === 'playing';
   D.bossZone.classList.toggle('is-turn', playing && view.toAct === 1);
   D.playerZone.classList.toggle('is-turn', playing && view.toAct === 0);
-}
-
-/** 言语命中的倾向贴纸：心理攻击落回牌桌的可见形态（效果耗尽即消失）。 */
-function renderEffects(boss) {
-  if (!D.bossEffects) return;
-  const effects = Array.isArray(boss.effects) ? boss.effects : [];
-  const sig = effects.map((e) => `${e.kind}:${e.desc}`).join('|');
-  if (D.bossEffects.dataset.sig === sig) return;
-  D.bossEffects.dataset.sig = sig;
-  clear(D.bossEffects);
-  for (const e of effects) {
-    D.bossEffects.appendChild(el('span', { class: `effect-chip effect-chip--${e.kind ?? ''}` }, [
-      el('span', { class: 'effect-chip__icon', text: e.icon ?? '•' }),
-      el('b', { text: e.label ?? '' }),
-      el('i', { text: e.desc ?? '' }),
-    ]));
-  }
-  D.bossEffects.hidden = effects.length === 0;
-}
-
-/** 他刚在这条街下注/加注？ → READ 的黄金时机。 */
-function bossJustBet(view) {
-  const la = view.boss?.lastAction;
-  if (!la || la.street !== view.street) return false;
-  return la.action === 'bet' || la.action === 'raise' || la.action === 'allin';
-}
-
-/** READ 倾向标签（判断轴，不是答案）。 */
-function setLeanChip(item) {
-  if (!D.readLean) return;
-  const label = item && item.lean ? item.leanLabel : null;
-  if (!label) {
-    D.readLean.hidden = true;
-    D.readLean.textContent = '';
-    D.readLean.dataset.lean = '';
-    return;
-  }
-  if (D.readLean.dataset.lean === label) return;
-  D.readLean.dataset.lean = label;
-  D.readLean.textContent = `💛 ${label}`;
-  D.readLean.hidden = false;
-}
-
-/**
- * 心理操作区的情境提示 —— 回答三个「什么时候用」：
- * 有倾向问句 > 有破绽可追问 > READ 黄金时机 > 默认循环提示。
- */
-function updateMentalHint(view, { readHot = false } = {}) {
-  if (!D.mentalHint) return;
-  let text;
-  if (S.pendingLean) text = `倾向：${S.pendingLean} —— 你信吗？`;
-  else if (view?.player?.canChallenge && !S.objection) text = '他的话有破绽 —— 质疑可以追打';
-  else if (readHot) text = '他刚下注 · 此刻 READ 最有价值';
-  else text = '瞄准 READ · 布局言语 · 破绽亮起按看穿';
-  if (D.mentalHint.textContent !== text) D.mentalHint.textContent = text;
-  D.mentalHint.classList.toggle('is-question', Boolean(S.pendingLean));
 }
 
 function renderPlayer(view) {
@@ -432,52 +483,112 @@ function renderPlayer(view) {
   setHandname(D.playerHandname, 0);
 }
 
+/* --------------------------------------------------------- 筹码堆（§27） */
+
+/** 本局筹码总量：chips + pot 恒定，作为筹码条分母（只增不减，防御服务端异常）。 */
+function chipsRef() {
+  const v = S.view;
+  if (v) {
+    const sum = (Math.round(Number(v.player?.chips) || 0)
+      + Math.round(Number(v.boss?.chips) || 0)
+      + Math.round(Number(v.pot) || 0));
+    if (sum > S.chipsRef) S.chipsRef = sum;
+  }
+  return Math.max(1, S.chipsRef);
+}
+
+function setStackFill(seat, chips) {
+  const fill = seat === 1 ? D.bossStackFill : D.playerStackFill;
+  if (!fill) return;
+  const pct = clamp((Math.max(0, Math.round(Number(chips) || 0)) / chipsRef()) * 100, 0, 100);
+  fill.style.width = `${pct.toFixed(2)}%`;
+}
+
+function renderStacks(view) {
+  setStackFill(1, view.boss?.chips);
+  setStackFill(0, view.player?.chips);
+}
+
+/* ------------------------------------------------------------- 右侧四分区 */
+
 function renderSidebar(view) {
   D.handPill.textContent = `第 ${view.handNo ?? '—'} 手`;
 
-  fillFeed(D.history, (Array.isArray(view.history) ? view.history : [])
+  // 1) Action History（时间顺序，底部对齐）
+  fillFeed(D.history, arr(view.history)
     .filter((h) => h && typeof h === 'object')
     .map(historyNode));
 
-  const talkNodes = [];
-  const readNodes = [];
-  const importantNodes = [];
-  let latestRead = null;
-  for (const item of (Array.isArray(view.feed) ? view.feed : [])) {
-    if (!item || typeof item !== 'object') continue;
-    const node = feedNode(item);
-    if (item.kind === 'talk') talkNodes.push(node);
-    else if (item.kind === 'read') {
-      readNodes.push(node);
-      latestRead = item.text ?? latestRead; // feed 按时间顺序 → 最后一条 read 最新
-    } else importantNodes.push(node);
-  }
-  fillFeed(D.talk, talkNodes);
-  fillFeed(D.reads, readNodes);
-  fillFeed(D.important, importantNodes);
+  // 2) READ Fragments（纯文本，最新在上）
+  const frags = arr(view.readFragments).filter((f) => f && typeof f === 'object');
+  fillTop(D.fragments, frags.map(fragmentNode));
+  updateFragPill();
 
-  const readsArr = Array.isArray(view.reads) ? view.reads : [];
-  // 「最近 3 条」以 reads[0] 为最新；feed 缺 read 条目时兜底取其最后一条
-  updateReadLatest(readsArr[0]?.text ?? latestRead ?? '', { flash: false });
-  if (readsArr[0]) setLeanChip(readsArr[0]); // 刷新页面后倾向标签还在
+  // 3) CRACK Feedback（证据链 + gotcha 结果；最新在上，与 live 插入一致）
+  const cracks = arr(view.cracks).filter((c) => c && typeof c === 'object');
+  S.crackEntries = {};
+  for (const c of cracks) if (c.id != null) S.crackEntries[c.id] = c;
+  fillTop(D.cracks, [...cracks].reverse().map(crackNode));
+  updateCrackPill(view);
 
-  const left = Math.max(0, Math.round(Number(view.player?.readsLeft) || 0));
-  D.readLeftPill.textContent = `本手 ${left} 次`;
+  // 4) Battle Log（read/crack 有自己的面板 → 过滤掉）
+  const logItems = arr(view.feed)
+    .filter((item) => item && typeof item === 'object')
+    .filter((item) => item.kind !== 'read' && item.kind !== 'crack');
+  fillFeed(D.battlelog, logItems.map(logNode));
 }
 
-function renderObjectionFromView(view) {
-  const o = view.objection;
-  if (!o || typeof o !== 'object' || !Number.isFinite(Number(o.deadline))) {
-    if (S.objection && !S.objectionPending) clearObjection();
+/* ------------------------------------------------------------- 行动栏 */
+
+function syncReadCooldown(view) {
+  const until = Math.round(Number(view?.player?.readCooldownUntil) || 0);
+  const now = Date.now();
+  if (until > now) {
+    if (until > S.readUntil) {
+      // 新一轮冷却：重置转圈窗口
+      S.readUntil = until;
+      S.readWindowMs = Math.max(300, until - now);
+    }
+    if (S.readTimer === null) {
+      tickReadCd();
+      S.readTimer = setInterval(tickReadCd, READ_TICK_MS);
+    }
+  } else if (S.readTimer !== null) {
+    stopReadCd();
+    paintReadCd(0, true);
+  } else {
+    paintReadCd(0, true);
+  }
+}
+
+function stopReadCd() {
+  if (S.readTimer !== null) {
+    clearInterval(S.readTimer);
+    S.readTimer = null;
+  }
+  S.readUntil = 0;
+  S.readWindowMs = 0;
+}
+
+function tickReadCd() {
+  const remain = S.readUntil - Date.now();
+  if (remain <= 0) {
+    stopReadCd();
+    paintReadCd(0, true);
+    // 冷却结束 → 恢复按钮（若此刻空闲）
+    try {
+      if (S.view) renderActionbar(S.view);
+    } catch { /* 忽略 */ }
     return;
   }
-  const deadline = Number(o.deadline);
-  if (deadline - Date.now() <= 0) {
-    clearObjection();
-    return;
-  }
-  if (S.objection && S.objection.id === o.id) return; // 已在倒计时
-  openObjection({ id: o.id, deadline, line: o.line ?? '' }, deadline - Date.now(), { sound: false });
+  paintReadCd(remain, false);
+}
+
+function paintReadCd(remain, ready) {
+  const frac = ready || S.readWindowMs <= 0 ? 1 : clamp(remain / S.readWindowMs, 0, 1);
+  if (D.readRing) D.readRing.style.setProperty('--cd', `${(frac * 360).toFixed(1)}deg`);
+  if (D.readCd) D.readCd.textContent = ready ? 'READY' : `${Math.ceil(remain / 100) / 10}s`;
+  if (D.btnRead) D.btnRead.classList.toggle('is-ready', ready);
 }
 
 function renderActionbar(view) {
@@ -487,24 +598,43 @@ function renderActionbar(view) {
   const legal = (view.player && typeof view.player.legal === 'object' && view.player.legal)
     ? view.player.legal
     : {};
+  const mode = modeOf(view);
 
-  D.checkLabel.textContent = '过牌';
-  D.btnCheck.disabled = !(myTurn && legal.check === true);
+  // FOLD | CALL/CHECK | PRESSURE | HEAVY | ALL IN
+  D.btnFold.disabled = !(myTurn && legal.fold === true);
 
   const callAmt = Math.round(Number(legal.call) || 0);
-  D.callLabel.textContent = callAmt > 0 ? `跟注 ${fmt(callAmt)}` : '跟注';
-  D.btnCall.disabled = !(myTurn && callAmt > 0);
+  if (legal.check === true && callAmt <= 0) {
+    D.callcheckLabel.textContent = '过牌';
+    D.btnCallcheck.disabled = !myTurn;
+  } else if (callAmt > 0) {
+    D.callcheckLabel.textContent = `跟注 ${fmt(callAmt)}`;
+    D.btnCallcheck.disabled = !myTurn;
+  } else {
+    D.callcheckLabel.textContent = '过牌';
+    D.btnCallcheck.disabled = true;
+  }
 
-  D.btnFold.disabled = !(myTurn && legal.fold === true);
+  const pressureTo = Math.round(Number(legal.pressureTo) || 0);
+  D.pressureTo.textContent = pressureTo > 0 ? fmt(pressureTo) : '—';
+  D.btnPressure.disabled = !(myTurn && legal.pressure === true);
+
+  const heavyTo = Math.round(Number(legal.heavyTo) || 0);
+  D.heavyTo.textContent = heavyTo > 0 ? fmt(heavyTo) : '—';
+  D.btnHeavy.disabled = !(myTurn && legal.heavy === true);
 
   const allinAmt = Math.round(Number(legal.allin) || 0);
   D.allinLabel.textContent = allinAmt > 0 ? `全下 ${fmt(allinAmt)}` : '全下';
   D.btnAllin.disabled = !(myTurn && allinAmt > 0);
 
-  // BET / RAISE 合并控件（滑杆 + 快捷比例）
+  // EXECUTION 专属自由滑杆：mode 门禁 + legal.bet/raise 双保险
+  D.raiseBox.hidden = mode !== 'EXECUTION';
   const minTo = Math.round(Number(legal.minTo) || 0);
   const maxTo = Math.round(Number(legal.maxTo) || 0);
-  const canRaise = myTurn && (legal.bet === true || legal.raise === true) && maxTo > 0;
+  const canRaise = mode === 'EXECUTION'
+    && myTurn
+    && (legal.bet === true || legal.raise === true)
+    && maxTo > 0;
   D.raiseBox.classList.toggle('is-locked', !canRaise);
   D.raiseBox.classList.toggle('is-armed', canRaise);
   D.btnRaise.disabled = !canRaise;
@@ -522,32 +652,23 @@ function renderActionbar(view) {
   D.raiseSlider.disabled = !canRaise;
   updateRaiseUI();
 
-  // 心理操作（每手剩余次数，0 次禁用；不依赖 toAct，由服务端裁决合法性）
-  const mentalOk = playing && !busy;
-  const reads = Math.max(0, Math.round(Number(view.player?.readsLeft) || 0));
-  D.readBadge.textContent = `×${reads}`;
-  const readHot = myTurn && reads > 0 && bossJustBet(view);
-  D.btnRead.disabled = !(mentalOk && reads > 0);
-  D.btnRead.classList.toggle('is-hot', readHot); // 他刚下注 → READ 呼吸高亮
+  // READ：冷却转圈按 readCooldownUntil
+  const now = Date.now();
+  const cdUntil = Math.round(Number(view.player?.readCooldownUntil) || 0);
+  const cooling = cdUntil > now;
+  D.btnRead.disabled = !(playing && !busy && !cooling);
+  syncReadCooldown(view);
 
-  const canChallenge = view.player?.canChallenge === true;
-  const speech = (view.player?.speech && typeof view.player.speech === 'object') ? view.player.speech : {};
-  for (const [btn, badge, key] of [
-    [D.btnTaunt, D.tauntLeft, 'taunt'],
-    [D.btnChallenge, D.challengeLeft, 'challenge'],
-    [D.btnPressure, D.pressureLeft, 'pressure'],
-  ]) {
-    const n = Math.max(0, Math.round(Number(speech[key]) || 0));
-    badge.textContent = `×${n}`;
-    // 质疑（清算）只有「手里有破绽」时才亮 —— 教会玩家别乱按
-    const armed = key !== 'challenge' || canChallenge;
-    btn.disabled = !(mentalOk && n > 0 && armed);
-    if (key === 'challenge') btn.classList.toggle('is-armed', Boolean(canChallenge && n > 0 && mentalOk));
-  }
-  updateMentalHint(view, { readHot });
+  // GOTCHA!：仅 view.gotcha 非空可用（确认条竞态：快照里已无 gotcha 即收起）
+  const armed = Boolean(view.gotcha);
+  if (S.gotchaOpen && !armed) closeGotchaConfirm();
+  D.btnGotcha.disabled = !(playing && !busy && armed && !S.gotchaPosting);
+  D.btnGotcha.classList.toggle('is-armed', armed);
 
-  const [text, mode] = statusFor(view, busy);
-  setStatus(text, mode);
+  updateMentalHint(view);
+
+  const [text, status] = statusFor(view, busy);
+  setStatus(text, status);
 }
 
 function updateRaiseUI() {
@@ -564,100 +685,22 @@ function updateRaiseUI() {
   D.raiseSlider.style.setProperty('--fill', `${clamp(pct, 0, 100)}%`);
 }
 
+/** 特殊操作区的情境提示行。 */
+function updateMentalHint(view) {
+  if (!D.mentalHint) return;
+  let text;
+  const mode = modeOf(view);
+  if (view.gotcha) text = 'CRACK 成立 —— 押注你的判断：他是在诈，还是真有货？';
+  else if (mode === 'EXECUTION') text = 'EXECUTION：自由下注尺寸开放 · READ 高速连发';
+  else if (mode === 'COUNTER') text = 'COUNTER：他正在反扑 —— 大注比平时更真';
+  else text = 'READ 攒碎片 → 串成证据链 CRACK → GOTCHA 押注判断';
+  if (D.mentalHint.textContent !== text) D.mentalHint.textContent = text;
+}
+
 function renderPhase(view) {
   const ended = view.phase === 'victory' || view.phase === 'defeat';
   if (ended && !S.endShown) showEnd(view, { withHeart: Boolean(S.heart) });
   else if (!ended && S.endShown) hideEnd();
-}
-
-/* ======================================================= 异议窗口生命周期 */
-
-function openObjection(obj, windowMs, { sound = true } = {}) {
-  clearObjection();
-  const winMs = Math.max(400, Math.round(Number(windowMs) || 2400));
-  S.objection = {
-    id: obj.id,
-    deadline: Number(obj.deadline),
-    line: typeof obj.line === 'string' ? obj.line : '',
-    windowMs: winMs,
-  };
-  D.objection.hidden = false;
-  D.objectionLine.textContent = S.objection.line;
-  D.btnObjection.disabled = false;
-  D.bubble.classList.add('is-hot');
-  if (D.app) D.app.classList.add('is-catchtime'); // 三拍：屏息态（气泡+注码发亮）
-  if (sound) sfx.notify();
-  tickObjection();
-  S.objTimer = setInterval(tickObjection, 80);
-}
-
-function tickObjection() {
-  const o = S.objection;
-  if (!o) return;
-  const remaining = o.deadline - Date.now();
-  if (remaining <= 0) {
-    clearObjection(); // 过期自动消失
-    return;
-  }
-  D.objMs.textContent = String(Math.ceil(remaining));
-  const frac = clamp(remaining / o.windowMs, 0, 1);
-  D.objRingFg.style.strokeDashoffset = String(RING_CIRCUM * (1 - frac));
-}
-
-function clearObjection() {
-  if (S.objTimer !== null) {
-    clearInterval(S.objTimer);
-    S.objTimer = null;
-  }
-  S.objection = null;
-  if (D.objection) {
-    D.objection.hidden = true;
-    D.objMs.textContent = '0';
-    D.objRingFg.style.strokeDashoffset = '0';
-    D.btnObjection.disabled = false;
-  }
-  if (D.bubble) D.bubble.classList.remove('is-hot');
-  if (D.app) D.app.classList.remove('is-catchtime');
-}
-
-async function onObjectionClick() {
-  const o = S.objection;
-  if (!o || S.objectionPending) return;
-  if (S.awaiting) return; // 其它请求在途：避免并发响应覆盖 view 的竞态
-  if (o.deadline - Date.now() <= 0) {
-    clearObjection();
-    return;
-  }
-  S.objectionPending = true;
-  D.btnObjection.disabled = true;
-  sfx.objection();
-  fx.popup(D.btnObjection, 'OBJECTION!', 'crit');
-
-  let resp = null;
-  try {
-    resp = await api.object(o.id);
-  } catch (err) {
-    console.warn('[异议] 请求失败', err);
-    fx.toast(err?.message || '异议提交失败', 'error');
-    sfx.miss();
-  }
-  S.objectionPending = false;
-
-  if (resp) {
-    applyResponse(resp);
-    const hasResultEvent = Array.isArray(resp.events)
-      && resp.events.some((e) => e?.type === 'objection_result');
-    if (resp.ok === false && !hasResultEvent) {
-      // 服务端判定失败但未附事件：本地补轻量反馈并关窗
-      clearObjection();
-      sfx.miss();
-      const why = REASON_LABEL[resp.reason] ?? (resp.reason ? String(resp.reason) : '');
-      fx.popup(D.bubble, `异议无效${why ? ` · ${why}` : ''}`, 'miss');
-    }
-  } else {
-    D.btnObjection.disabled = false; // 网络抖动：窗口若还在，允许重试
-  }
-  await pump();
 }
 
 /* ========================================================= 请求与事件队列 */
@@ -665,6 +708,9 @@ async function onObjectionClick() {
 function applyResponse(resp) {
   if (resp && resp.view && typeof resp.view === 'object') {
     S.view = clone(resp.view); // 深拷贝：播放期间绝不与响应对象共享引用
+    // 「再来一局」：权威快照已回到 playing → 先收掉结局遮罩，
+    // 否则 hand_start 的横幅/弹字会被 z-index 更高的结局层盖住
+    if (S.view.phase === 'playing' && S.endShown) hideEnd();
   }
   const events = Array.isArray(resp?.events) ? resp.events : [];
   if (events.length) S.queue.push(...events);
@@ -692,8 +738,8 @@ async function request(fn) {
 /**
  * 串行播放事件队列。
  * - 单条事件异常只 warn，不中断队列；
- * - finally 之后必渲染 + 解锁 —— 异常路径也不会卡死行动栏；
- * - 播放中新增的事件（如异议响应）会在下一轮 while 判断被取走。
+ * - finally 之后必渲染 + 解锁 —— 异常路径也不会卡死行动栏与 GOTCHA 确认条；
+ * - 播放中新增的事件会在下一轮 while 判断被取走。
  */
 async function pump() {
   if (S.pumping) return;
@@ -710,6 +756,10 @@ async function pump() {
     }
   } finally {
     S.pumping = false;
+    // 队列异常路径的兜底：确认条若还开着但 gotcha 已不存在，收起
+    try {
+      if (S.gotchaOpen && !S.view?.gotcha) closeGotchaConfirm();
+    } catch { /* 忽略 */ }
   }
   if (S.view) {
     try {
@@ -727,23 +777,27 @@ async function pump() {
  * 解锁交给 render(S.view) 按 legal 精确恢复 —— 绝不盲目启用按钮。
  */
 function syncLock() {
-  if (!D.btnCheck) return;
+  if (!D.btnFold) return;
   const lock = isBusy();
   const playing = S.view ? S.view.phase === 'playing' : true;
   const [text, mode] = statusFor(S.view, isBusy());
   setStatus(text, mode);
 
   if (lock || !playing) {
-    D.btnCheck.disabled = true;
-    D.btnCall.disabled = true;
     D.btnFold.disabled = true;
+    D.btnCallcheck.disabled = true;
+    D.btnPressure.disabled = true;
+    D.btnHeavy.disabled = true;
     D.btnAllin.disabled = true;
     D.btnRaise.disabled = true;
     D.raiseBox.classList.toggle('is-locked', true);
     D.btnRead.disabled = true;
-    D.btnTaunt.disabled = true;
-    D.btnChallenge.disabled = true;
-    D.btnPressure.disabled = true;
+    D.btnGotcha.disabled = true;
+    D.btnGuessBluff.disabled = true;
+    D.btnGuessStrong.disabled = true;
+  } else {
+    D.btnGuessBluff.disabled = false;
+    D.btnGuessStrong.disabled = false;
   }
 }
 
@@ -762,39 +816,34 @@ async function playEvent(ev) {
   await player(ev);
 }
 
-/** mental / objection_result 共用：换色换表情 + 横幅（含行为后果）+ 音效 + feed。 */
-function showMental(from, to, cause, hint = null, down = null) {
+/** 三状态情绪横幅（v3 单向恶化：CALM → SHAKEN → TILT）。 */
+function showMental(from, to, causeName, hint = null, down = null) {
   const fromT = STATE_LABEL[from] ?? String(from ?? '');
   const toT = STATE_LABEL[to] ?? String(to ?? '');
-  const orderFrom = STATE_ORDER.indexOf(from);
-  const orderTo = STATE_ORDER.indexOf(to);
-  const isDown = down === null || down === undefined
-    ? (orderFrom < 0 || orderTo < 0 ? true : orderTo > orderFrom)
-    : Boolean(down);
-  const arrow = isDown ? '▼' : '▲';
+  const isDown = down === null || down === undefined ? true : Boolean(down);
 
-  if (to) D.bossZone.dataset.state = to;
+  if (to && STATE_LABEL[to]) D.bossZone.dataset.state = to;
   const finalBoss = S.view?.boss;
   if (finalBoss && finalBoss.state === to) {
-    if (finalBoss.face) D.bossFace.textContent = finalBoss.face;
-    D.bossMood.textContent = finalBoss.mood ?? toT;
+    D.bossFace.textContent = str(finalBoss.face, STATE_FACE[to] ?? '😏');
+    D.bossMood.textContent = str(finalBoss.mood, toT);
   } else {
-    D.bossMood.textContent = toT; // face 保持服务端给的上一次值，终态渲染时校正
+    D.bossFace.textContent = STATE_FACE[to] ?? D.bossFace.textContent;
+    D.bossMood.textContent = toT;
   }
-  // 回血用明亮提示音，打击用沉心理音 —— 方向感也要能听出来
+
   if (isDown) sfx.mental();
   else sfx.notify();
 
-  const causeText = CAUSE_LABEL[cause] ?? (cause ? String(cause) : '');
-  appendCapped(D.important, feedNode({
+  appendCapped(D.battlelog, logNode({
     kind: 'mental',
-    text: `${arrow} ${fromT} → ${toT}${causeText ? ` · ${causeText}` : ''}${hint ? ` · ${hint}` : ''}`,
+    text: `${isDown ? '▼' : '▲'} ${fromT} → ${toT}${causeName ? ` · ${causeName}` : ''}${hint ? ` · ${hint}` : ''}`,
   }));
-  // 横幅副标题优先显示「他接下来会怎么变」——命中必须说清因果
-  return fx.mentalBanner(fromT, toT, hint || causeText, { recover: !isDown });
+  return fx.mentalBanner(fromT, toT, hint || causeName || '', { recover: !isDown });
 }
 
 async function typeBossLine(line) {
+  if (!line) return;
   sfx.testimony();
   D.bubbleText.dataset.line = '';
   await typewrite(D.bubbleText, line, { ms: 28, caret: D.bubbleCaret });
@@ -808,25 +857,48 @@ const EVENT_PLAYERS = {
     S.playHand = Number(ev.handNo) || S.playHand;
     S.playStreet = 'preflop';
     S.liveBet = { 0: 0, 1: 0 };
+    S.crackEntries = {};
+    S.crackResults = {};
+    closeGotchaConfirm();
     boardRow.render([]);
     setHandname(D.playerHandname, 0);
     setHandname(D.bossHandname, 1);
     fx.tableZoom(false);
     setBetFlag(D.playerBet, 0);
     setBetFlag(D.bossBet, 0);
-    sfx.notify();
+    clear(D.cracks);
+    updateCrackPill(S.view);
+
+    if (ev.blindUp === true) {
+      sfx.blindup();
+      appendCapped(D.battlelog, logNode({
+        kind: 'blind',
+        text: `盲注升级 ${ev.sb ?? '?'}/${ev.bb ?? '?'}${str(ev.tier) ? ` · ${ev.tier}` : ''}`,
+      }));
+      await fx.banner({
+        text: `BLIND UP ${ev.sb ?? '?'}/${ev.bb ?? '?'}`,
+        sub: str(ev.tier) || '盲注升级',
+        cls: 'fx-banner--blind',
+        holdMs: 1500,
+      });
+      await fx.sleep(120);
+    } else {
+      sfx.notify();
+      await fx.sleep(520);
+    }
     fx.popup(D.streetBadge, `第 ${ev.handNo ?? ''} 手`, 'hit');
-    await fx.sleep(520);
   },
 
   async blinds(ev) {
     const seat = ev.seat === 1 ? 1 : 0;
     const amount = Math.max(0, Math.round(Number(ev.amount) || 0));
     S.liveBet[seat] = (S.liveBet[seat] || 0) + amount;
-    const chipsEl = seat === 1 ? D.bossChips : D.playerChips;
     if (amount > 0) {
+      const chipsEl = seat === 1 ? D.bossChips : D.playerChips;
       const from = parseNum(chipsEl.textContent);
-      fx.animateNumber(chipsEl, from, Math.max(0, from - amount), 340);
+      const to = Math.max(0, from - amount);
+      fx.animateNumber(chipsEl, from, to, 340);
+      setStackFill(seat, to);
     }
     setBetFlag(seat === 1 ? D.bossBet : D.playerBet, S.liveBet[seat]);
     if (ev.potAfter != null) {
@@ -840,17 +912,20 @@ const EVENT_PLAYERS = {
 
   async action(ev) {
     const isBoss = ev.seat === 1;
-    if (isBoss) await fx.sleep(800 + Math.random() * 600); // 思考停顿 0.8–1.4s
+    if (isBoss) await fx.sleep(700 + Math.random() * 500); // 思考停顿 0.7–1.2s
 
     const put = Math.max(0, Math.round(Number(ev.put) || 0));
+    const seat = isBoss ? 1 : 0;
     const chipsEl = isBoss ? D.bossChips : D.playerChips;
     if (put > 0) {
       const from = parseNum(chipsEl.textContent);
-      fx.animateNumber(chipsEl, from, Math.max(0, from - put), 420); // 输家筹码倒数
-      S.liveBet[ev.seat === 1 ? 1 : 0] = (S.liveBet[ev.seat === 1 ? 1 : 0] || 0) + put;
+      const to = Math.max(0, from - put);
+      fx.animateNumber(chipsEl, from, to, 420); // 输家筹码倒数
+      setStackFill(seat, to);
+      S.liveBet[seat] = (S.liveBet[seat] || 0) + put;
       sfx.chip();
     }
-    setBetFlag(isBoss ? D.bossBet : D.playerBet, S.liveBet[ev.seat === 1 ? 1 : 0]);
+    setBetFlag(isBoss ? D.bossBet : D.playerBet, S.liveBet[seat]);
 
     if (ev.potAfter != null) {
       D.potValue.textContent = fmt(ev.potAfter);
@@ -858,11 +933,11 @@ const EVENT_PLAYERS = {
         { duration: 340, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' });
     }
 
-    const label = ACTION_LABEL[ev.action] ?? ev.action;
+    const label = ACTION_LABEL[ev.action] ?? ev.action ?? '—';
     appendCapped(D.history, historyNode({
       handNo: S.playHand,
       street: S.playStreet,
-      actor: ev.seat === 1 ? 1 : 0,
+      actor: isBoss ? 1 : 0,
       action: ev.action,
       amount: ev.amount,
     }));
@@ -882,7 +957,9 @@ const EVENT_PLAYERS = {
       case 'check': sfx.check(); break;
       case 'call': sfx.chip(); break;
       case 'bet':
-      case 'raise': sfx.raise(); break;
+      case 'raise':
+      case 'pressure':
+      case 'heavy': sfx.raise(); break;
       case 'fold': sfx.fold(); break;
       case 'allin': sfx.allin(); break;
       default: break;
@@ -898,8 +975,8 @@ const EVENT_PLAYERS = {
   },
 
   async street(ev) {
-    const cards = Array.isArray(ev.cards) ? ev.cards.filter((c) => typeof c === 'string') : [];
-    const street = typeof ev.street === 'string' ? ev.street : '';
+    const cards = arr(ev.cards).filter((c) => typeof c === 'string');
+    const street = str(ev.street);
     sfx.turn();
     S.playStreet = street;
     S.liveBet = { 0: 0, 1: 0 };
@@ -917,121 +994,141 @@ const EVENT_PLAYERS = {
   },
 
   async talk(ev) {
-    const line = typeof ev.line === 'string' ? ev.line : '';
-    appendCapped(D.talk, feedNode({ kind: 'talk', text: line }));
+    const line = str(ev.line);
+    appendCapped(D.battlelog, logNode({ kind: 'talk', text: line }));
     await typeBossLine(line);
     await fx.sleep(340);
   },
 
-  async read(ev) {
-    const text = typeof ev.text === 'string' ? ev.text : '';
-    sfx.notify();
-    appendCapped(D.reads, feedNode({ kind: 'read', text }));
-    D.readLatest.classList.remove('is-empty');
-    D.readLatest.dataset.text = '';
-    await typewrite(D.readLatest, text, { ms: 24 });
-    D.readLatest.dataset.text = text;
-    flashReadLatest();
-    // 倾向标签 = 判断轴；随后行动栏给出「你信吗？」
-    setLeanChip({ lean: ev.lean, leanLabel: ev.leanLabel });
-    S.pendingLean = ev.lean ? ev.leanLabel : null;
-    updateMentalHint(S.view, {});
-    await fx.sleep(520);
+  /**
+   * READ 碎片闪现：fire-and-forget —— flashMs 后自行淡出，
+   * 这里只同步追加面板并让出极短一拍，绝不阻塞队列。
+   */
+  async read_fragment(ev) {
+    const text = str(ev.text);
+    const flashMs = clamp(Math.round(Number(ev.flashMs) || 1000), 300, 4000);
+    const exec = modeOf(S.view) === 'EXECUTION';
+    sfx.fragment();
+    showFragmentFlash(text, flashMs, exec);
+    if (text) {
+      prependCapped(D.fragments, fragmentNode({ text }));
+      updateFragPill();
+    }
+    if (ev.burst === true) fx.popup(D.bossFace, '信息量暴增', 'hit');
+    await fx.sleep(90); // 只让出一拍给音效/浮层起步 —— 不等 flashMs
   },
 
-  async speech(ev) {
-    const skill = SPEECH_LABEL[ev.skill] ?? String(ev.skill ?? '言语');
-    const resultLabel = SPEECH_RESULT[ev.result] ?? String(ev.result ?? '');
-    const line = typeof ev.line === 'string' ? ev.line : '';
+  /** CRACK：白闪 + 震屏 + 大字 + 面板点亮（允许 1.4s 演出停顿）。 */
+  async crack(ev) {
+    const kind = str(ev.kind, 'WEAKNESS');
+    const strength = clamp(Math.round(Number(ev.strength) || 0), 0, 9);
+    const entry = {
+      id: ev.id,
+      kind,
+      evidence: arr(ev.evidence),
+      strength,
+      critical: ev.critical === true,
+      handNo: S.playHand,
+    };
+    if (entry.id != null) S.crackEntries[entry.id] = entry;
+    prependCapped(D.cracks, crackNode(entry));
+    updateCrackPill(S.view);
 
-    sfx.speech();
-    await fx.sleep(200);
-    if (ev.result === 'hit') {
-      fx.popup(D.bossAvatar, `${skill}命中！`, 'hit');
-      sfx.hit();
-      fx.avatarShake(380, 10);
-    } else {
-      fx.popup(D.bossAvatar, ev.result === 'resist' ? `${skill}被抵挡` : `${skill}落空`, 'miss');
-      sfx.miss();
+    sfx.crack();
+    fx.flash();
+    fx.screenShake(460, 9);
+    await fx.bigText('CRACK!',
+      `${CRACK_KIND_LABEL[kind] ?? kind} · ${strength} 重证据${entry.critical ? ' · CRITICAL' : ''}`,
+      { tone: entry.critical ? 'red' : 'gold', holdMs: 1400 });
+  },
+
+  /**
+   * GOTCHA 结果：
+   * 正确 → GOTCHA! → Hitstop → 牌桌 zoom → Boss 表情 → EXECUTION 大字；
+   * 错误 → GOTCHA! → 停顿 → Boss 反应台词 → COUNTER! 红字 + 红闪。
+   */
+  async gotcha_result(ev) {
+    const id = S.pendingGotchaId;
+    S.pendingGotchaId = null;
+    const guess = str(ev.guess, '—');
+    const correct = ev.correct === true;
+    if (id != null) {
+      S.crackResults[id] = { guess, correct };
+      refreshCrackRow(id); // 已在面板上的那条链补上结果徽章
     }
-    appendCapped(D.important, feedNode({
-      kind: 'speech',
-      text: `${skill} · ${resultLabel}${line ? ` · 「${line}」` : ''}`,
+
+    appendCapped(D.battlelog, logNode({
+      kind: 'gotcha',
+      text: `押注 ${GUESS_LABEL[guess] ?? guess} → ${correct ? `判断正确 · ${ev.mode ?? 'EXECUTION'}` : `判断失误 · ${ev.mode ?? 'COUNTER'}`}`,
     }));
 
-    if (line) await typeBossLine(line);
-    await fx.sleep(360);
+    sfx.gotcha();
+    await fx.bigText('GOTCHA!', `${GUESS_LABEL[guess] ?? guess} · ${correct ? '你赌对了' : '你赌错了'}`,
+      { tone: correct ? 'gold' : 'red', holdMs: 780 });
+
+    if (correct) {
+      await fx.hitstop(260);
+      fx.tableZoom(true);
+      // Boss 表情变化（view 已是终态）
+      const boss = S.view?.boss;
+      if (boss) {
+        D.bossFace.textContent = str(boss.face, STATE_FACE[boss.state] ?? '😏');
+        D.bossMood.textContent = str(boss.mood, STATE_LABEL[boss.state] ?? '');
+        if (boss.state && STATE_LABEL[boss.state]) D.bossZone.dataset.state = boss.state;
+      }
+      fx.avatarShake(360, 8);
+      sfx.execution();
+      await fx.bigText('EXECUTION', '自由下注 · 高速 READ', { tone: 'gold', holdMs: 1300 });
+    } else {
+      await fx.sleep(300); // 短暂停顿
+      const line = str(S.view?.boss?.lastLine);
+      if (line && line !== D.bubbleText.dataset.line) await typeBossLine(line);
+      else fx.popup(D.bossAvatar, '被他骗过去了', 'crit');
+      sfx.counter();
+      fx.flash('red');
+      fx.screenShake(440, 8);
+      await fx.bigText('COUNTER!', '他要反扑了', { tone: 'red', holdMs: 1300 });
+    }
+  },
+
+  /** 模式切换（EXECUTION / COUNTER / NORMAL 回落）。 */
+  async mode(ev) {
+    const mode = MODES.has(str(ev.mode)) ? ev.mode : 'NORMAL';
+    appendCapped(D.battlelog, logNode({
+      kind: 'mode',
+      text: `模式 → ${MODE_LABEL[mode]} · ${MODE_HINT[mode]}`,
+    }));
+    D.hudMode.dataset.mode = mode;
+    D.hudMode.textContent = MODE_LABEL[mode];
+    D.app.dataset.mode = mode;
+    if (mode === 'NORMAL') fx.popup(D.hudMode, '回到 NORMAL', 'miss');
+    await fx.sleep(240);
+  },
+
+  /** BUSTED!：立绘震动 + 大字 → 随后的 mode 事件切入 COUNTER。 */
+  async busted(ev) {
+    const line = str(ev.line, '我看穿你了！');
+    sfx.busted();
+    fx.avatarShake(620, 16);
+    fx.screenShake(520, 9);
+    appendCapped(D.battlelog, logNode({ kind: 'model', text: line }));
+    await fx.bigText('BUSTED!', line, { tone: 'red', holdMs: 1500 });
+    await typeBossLine(line);
+    await fx.sleep(220);
   },
 
   async mental(ev) {
-    await showMental(ev.from, ev.to, ev.causeName ?? ev.cause, ev.hint ?? null, ev.down);
-  },
-
-  async contradiction(ev) {
-    sfx.notify();
-    D.bubble.classList.add('is-hot');
-    // 三拍的第三拍：破绽连线 —— 台词气泡与注码一起发亮、心跳两声、画面进入「屏息」态
-    if (D.app) D.app.classList.add('is-catchtime');
-    sfx.heartbeat();
-    setTimeout(() => sfx.heartbeat(), 430);
-    const why = CONTRADICTION_LABEL[ev.kind] ?? (ev.kind ? String(ev.kind) : '出现破绽');
-    fx.popup(D.bubble, '破绽出现', 'crit');
-    appendCapped(D.important, feedNode({ kind: 'contradiction', text: `${why} · 按下看穿！` }));
-
-    // 首次破绽 = 教学定格（一次性）：不挡住队列，窗口照常紧接着打开
-    let coached = false;
-    try { coached = localStorage.getItem('allin.coach.v1') === '1'; } catch { coached = true; }
-    if (!coached) {
-      try { localStorage.setItem('allin.coach.v1', '1'); } catch { /* 忽略 */ }
-      fx.hitstop(380);
-      fx.bigText('破绽！', why, { tone: 'red', holdMs: 1500 });
-    }
-    await fx.sleep(600);
-  },
-
-  async objection_open(ev) {
-    if (!Number.isFinite(Number(ev.deadline))) {
-      console.warn('[事件] objection_open 缺少合法 deadline，已忽略', ev);
-      return;
-    }
-    const windowMs = Math.max(400, Math.round(Number(ev.windowMs) || 2400));
-    const line = typeof ev.line === 'string' ? ev.line : '';
-    if (line && D.bubbleText.dataset.line !== line) {
-      await typeBossLine(line); // 异议窗口 = 打字机结束 + 余下时间（deadline 为准）
-    }
-    openObjection({ id: ev.id, deadline: ev.deadline, line }, windowMs, { sound: true });
-    fx.popup(D.bubble, '就是现在 — 看穿！', 'crit');
-    appendCapped(D.important, feedNode({ kind: 'objection', text: '破绽亮起：倒计时内按下看穿！' }));
-    await fx.sleep(260);
-  },
-
-  async objection_result(ev) {
-    clearObjection();
-    if (ev.success) {
-      await fx.impact({ title: '看穿了！', sub: 'SEE-THROUGH', tone: 'red', sfxName: 'objection' });
-      const tr = ev.transition;
-      if (tr && tr.to) await showMental(tr.from, tr.to, 'OBJECTION', ev.hint ?? null);
-      appendCapped(D.important, feedNode({
-        kind: 'objection',
-        text: tr ? '看穿了！心理防线崩了一格' : '看穿了！他嘴硬了一句，但防线松了',
-      }));
-    } else {
-      sfx.miss();
-      fx.popup(D.bubble, '没抓住', 'miss');
-      fx.screenShake(300, 5);
-      appendCapped(D.important, feedNode({ kind: 'objection', text: '看穿失败：窗口已经过去' }));
-      await fx.sleep(560);
-    }
+    await showMental(ev.from, ev.to, str(ev.causeName) || str(ev.cause), str(ev.hint) || null, ev.down);
   },
 
   async showdown(ev) {
-    const hands = Array.isArray(ev.hands) ? ev.hands : [];
+    const hands = arr(ev.hands);
     S.showdown = { hands, split: Boolean(ev.split) };
     sfx.turn();
 
     const bossHand = hands.find((h) => h?.seat === 1);
-    const bossHole = Array.isArray(bossHand?.hole) ? bossHand.hole : null;
-    if (bossHole && bossHole.length) {
+    const bossHole = arr(bossHand?.hole);
+    if (bossHole.length) {
       // 先以背面画出牌面，再逐张翻转（复用 CardRow 的 is-down 翻转动画）
       const down = bossHole.map(() => true);
       bossRow.render(bossHole.map((card, i) => ({ card, down: down[i] })));
@@ -1070,24 +1167,33 @@ const EVENT_PLAYERS = {
 
   async pot_move(ev) {
     const amount = Math.max(0, Math.round(Number(ev.amount) || 0));
-    const target = ev.to === 1 ? D.bossChips : D.playerChips;
+    const seat = ev.to === 1 ? 1 : 0;
+    const target = seat === 1 ? D.bossChips : D.playerChips;
     sfx.chip();
     await fx.flyChip(D.pot, target, fmt(amount));
     const from = parseNum(target.textContent);
-    fx.animateNumber(target, from, from + amount, 480); // 赢家筹码累加
+    const to = from + amount;
+    fx.animateNumber(target, from, to, 480); // 赢家筹码累加
+    setStackFill(seat, to);
     D.potValue.textContent = fmt(0);
     await fx.sleep(160);
   },
 
+  /** 结算：筹码堆迁移（数字滚动 + 分段条宽度过渡）≈2s。 */
   async hand_end(ev) {
     fx.tableZoom(false);
+    closeGotchaConfirm();
     const winner = ev.winner;
     const pot = Math.max(0, Math.round(Number(ev.pot) || 0));
 
     const pFrom = parseNum(D.playerChips.textContent);
     const bFrom = parseNum(D.bossChips.textContent);
-    fx.animateNumber(D.playerChips, pFrom, ev.stacks?.player ?? pFrom, 620);
-    fx.animateNumber(D.bossChips, bFrom, ev.stacks?.boss ?? bFrom, 620);
+    const pTo = Math.round(Number(ev.stacks?.player ?? pFrom));
+    const bTo = Math.round(Number(ev.stacks?.boss ?? bFrom));
+    fx.animateNumber(D.playerChips, pFrom, pTo, 620);
+    fx.animateNumber(D.bossChips, bFrom, bTo, 620);
+    setStackFill(0, pTo);
+    setStackFill(1, bTo);
 
     const who = winner === 0 ? '你' : winner === 1 ? '对手' : '双方';
     const text = winner == null
@@ -1095,16 +1201,17 @@ const EVENT_PLAYERS = {
       : `${who}${ev.split ? '平分' : '赢得'}底池 ${fmt(pot)}`;
     const cls = winner === 0 ? 'fx-banner--win' : winner === 1 ? 'fx-banner--lose' : '';
 
-    appendCapped(D.important, feedNode({
+    appendCapped(D.battlelog, logNode({
       kind: 'hand',
-      text: `第 ${ev.handNo ?? S.playHand} 手 · 底池 ${fmt(pot)} → ${who}${ev.split ? '平分' : `赢得 ${fmt(pot)}`}`,
+      text: `第 ${ev.handNo ?? S.playHand} 手 · 底池 ${fmt(pot)} → ${winner == null ? '平分'
+        : `${who}${ev.split ? '平分' : `赢得 ${fmt(pot)}`}`}${ev.mode && ev.mode !== 'NORMAL' ? ` · 模式 ${ev.mode}` : ''}`,
     }));
 
     if (winner === 0) sfx.win();
     else if (winner === 1) sfx.lose();
     else sfx.notify();
 
-    // 结算横幅 ≈2.2s，之后才轮到队列里的下一手 hand_start
+    // 结算横幅 ≈2.2s（筹码堆迁移），之后才轮到队列里的下一手 hand_start
     const settle = fx.banner({ text, sub: ev.bluffCaught ? 'BLUFF CAUGHT' : '', cls, holdMs: 2200 });
     if (ev.bluffCaught) {
       await fx.sleep(420);
@@ -1120,6 +1227,16 @@ const EVENT_PLAYERS = {
     await showEnd(viewAtEnd, { withHeart: Boolean(S.heart) });
   },
 };
+
+/** 把 gotcha 结果徽章补进已在面板上的那条链。 */
+function refreshCrackRow(id) {
+  if (!D.cracks || id == null) return;
+  const node = D.cracks.querySelector(`[data-id="${CSS.escape(String(id))}"]`);
+  const entry = S.crackEntries[id];
+  if (!node || !entry) return;
+  const fresh = crackNode(entry);
+  node.replaceWith(fresh);
+}
 
 /* ================================================================ 结局 */
 
@@ -1162,32 +1279,37 @@ function hideEnd() {
 
 /* ============================================== 上下文提示 & 新手引导 */
 
-/** 引导看过之后、首手还没动过时，给一次「先 READ」的轻提示（每局最多一次）。 */
+/** 引导看过之后的一次性情境提示：首手先 READ；首次 CRACK 提醒 GOTCHA。 */
 function maybeContextHints() {
-  if (!S.guideClosedOnce || S.guideOpen || S.hintReadDone) return;
+  if (!S.guideClosedOnce || S.guideOpen) return;
   const v = S.view;
-  if (!v || v.phase !== 'playing' || isBusy() || v.toAct !== 0) return;
-  if (S.usedRead) {
-    S.hintReadDone = true;
-    return;
-  }
-  if (v.handNo <= 1 && (v.player?.readsLeft ?? 0) > 0) {
+  if (!v || v.phase !== 'playing' || isBusy()) return;
+
+  if (!S.hintReadDone && !S.hintGotchaShown && Number(v.handNo) <= 1 && v.toAct === 0) {
     S.hintReadDone = true;
     setTimeout(() => {
-      if (!S.guideOpen) fx.toast('提示：先用 READ 看他一眼，再决定跟还是弃', 'info');
+      if (!S.guideOpen) fx.toast('提示：先按 READ 偷看他的碎片，攒出 CRACK 才有 GOTCHA', 'info');
     }, 700);
+    return;
+  }
+  if (!S.hintGotchaShown && v.gotcha) {
+    S.hintGotchaShown = true;
+    S.hintReadDone = true;
+    setTimeout(() => {
+      if (!S.guideOpen) fx.toast('证据链成立 —— 按 GOTCHA! 押注你的判断', 'info');
+    }, 500);
   }
 }
 
 /* ============================================================ 新手引导 */
 
-const GUIDE_KEY = 'allin.guide.v1';
+const GUIDE_KEY = 'allin.guide.v3'; // v3 大改 → 重新弹一次
 
 function guideSeen() {
   try {
     return localStorage.getItem(GUIDE_KEY) === '1';
   } catch {
-    return false; // 隐私模式拿不到 localStorage：当作没看过，每次都能重看也无妨
+    return false; // 隐私模式拿不到 localStorage：当作没看过
   }
 }
 
@@ -1261,7 +1383,7 @@ function schedulePoll() {
     S.polls = 0;
     return;
   }
-  if (S.polls >= POLL_MAX) return; // 有界轮询：服务端迟迟不轮到玩家时不无限打请求
+  if (S.polls >= POLL_MAX) return; // 有界轮询：不无限打请求
   S.polls += 1;
   S.pollTimer = setTimeout(async () => {
     S.pollTimer = null;
@@ -1270,28 +1392,83 @@ function schedulePoll() {
   }, POLL_MS);
 }
 
+function clearPoll() {
+  if (S.pollTimer !== null) {
+    clearTimeout(S.pollTimer);
+    S.pollTimer = null;
+  }
+}
+
+/* ========================================================= GOTCHA 流程 */
+
+function openGotchaConfirm() {
+  if (!S.view?.gotcha || isBusy() || S.gotchaPosting) return;
+  S.gotchaOpen = true;
+  D.gotchaConfirm.hidden = false;
+  D.btnGuessBluff.disabled = false;
+  D.btnGuessStrong.disabled = false;
+  sfx.notify();
+}
+
+function closeGotchaConfirm() {
+  S.gotchaOpen = false;
+  if (D.gotchaConfirm) D.gotchaConfirm.hidden = true;
+}
+
+async function fireGotcha(guess) {
+  if (!S.gotchaOpen || S.gotchaPosting) return;
+  if (isBusy()) return;            // 其它请求在途：避免并发响应覆盖 view 的竞态
+  if (!S.view?.gotcha) {           // 快照已过期（链被清空）→ 收起确认条
+    closeGotchaConfirm();
+    return;
+  }
+  unlockAudio();
+  S.polls = 0;
+  clearPoll();
+
+  S.gotchaPosting = true;
+  S.pendingGotchaId = S.view.gotcha.id ?? null;
+  closeGotchaConfirm();
+  D.btnGuessBluff.disabled = true;
+  D.btnGuessStrong.disabled = true;
+  D.btnGotcha.disabled = true;
+
+  const resp = await request(() => api.gotcha(guess));
+
+  S.gotchaPosting = false;
+  D.btnGuessBluff.disabled = false;
+  D.btnGuessStrong.disabled = false;
+  if (!resp) S.pendingGotchaId = null; // 失败：不把结果挂到错误的链上
+  // 解锁交给 pump → render → renderActionbar（按最新 view.gotcha 恢复）
+}
+
 /* ================================================================ 交互 */
 
 async function doAction(action, amount) {
   unlockAudio();
   S.polls = 0;
-  S.pendingLean = null; // 已经做出回答 —— 「你信吗？」收起
-  if (S.pollTimer !== null) {
-    clearTimeout(S.pollTimer);
-    S.pollTimer = null;
-  }
+  clearPoll();
+  closeGotchaConfirm(); // 已经做出扑克回答 —— 确认条收起
   const resp = await request(() => api.action(action, amount));
   if (resp) S.raiseTouched = false; // 新的一轮回到默认档位
   return resp;
 }
 
 function bindActions() {
-  D.btnCheck.addEventListener('click', () => doAction('check'));
-  D.btnCall.addEventListener('click', () => doAction('call'));
   D.btnFold.addEventListener('click', () => doAction('fold'));
+  D.btnCallcheck.addEventListener('click', () => {
+    const legal = S.view?.player?.legal ?? {};
+    const callAmt = Math.round(Number(legal.call) || 0);
+    if (legal.check === true && callAmt <= 0) doAction('check');
+    else if (callAmt > 0) doAction('call');
+  });
+  D.btnPressure.addEventListener('click', () => doAction('pressure'));
+  D.btnHeavy.addEventListener('click', () => doAction('heavy'));
   D.btnAllin.addEventListener('click', () => doAction('allin'));
   D.btnRaise.addEventListener('click', () => {
     const toCall = Math.round(Number(S.view?.player?.toCall) || 0);
+    // mode 门禁的最后一道保险
+    if (modeOf(S.view) !== 'EXECUTION') return;
     doAction(toCall > 0 ? 'raise' : 'bet', Math.round(S.raiseValue));
   });
 
@@ -1304,7 +1481,7 @@ function bindActions() {
   document.querySelectorAll('.raise__quick [data-frac]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const v = S.view;
-      if (!v) return;
+      if (!v || modeOf(v) !== 'EXECUTION') return;
       const legal = v.player?.legal ?? {};
       const minTo = Math.round(Number(legal.minTo) || 0);
       const maxTo = Math.round(Number(legal.maxTo) || 0);
@@ -1328,24 +1505,26 @@ function bindActions() {
   D.btnRead.addEventListener('click', async () => {
     unlockAudio();
     S.polls = 0;
-    S.usedRead = true;
+    clearPoll();
+    closeGotchaConfirm();
     await request(() => api.read());
   });
 
-  const speak = (skill) => async () => {
+  D.btnGotcha.addEventListener('click', () => {
     unlockAudio();
-    S.polls = 0;
-    await request(() => api.speak(skill));
-  };
-  D.btnTaunt.addEventListener('click', speak('taunt'));
-  D.btnChallenge.addEventListener('click', speak('challenge'));
-  D.btnPressure.addEventListener('click', speak('pressure'));
-
-  D.btnObjection.addEventListener('click', onObjectionClick);
+    if (S.gotchaOpen) closeGotchaConfirm();
+    else openGotchaConfirm();
+  });
+  D.btnGuessBluff.addEventListener('click', () => fireGotcha('BLUFF'));
+  D.btnGuessStrong.addEventListener('click', () => fireGotcha('STRONG'));
+  D.btnGuessCancel.addEventListener('click', () => closeGotchaConfirm());
 
   D.btnAgain.addEventListener('click', async () => {
     unlockAudio();
     S.polls = 0;
+    clearPoll();
+    closeGotchaConfirm();
+    S.chipsRef = 0; // 新一局：筹码堆分母重新观测
     await request(() => api.newgame());
   });
 
@@ -1366,11 +1545,12 @@ function bindActions() {
 
 function bindKeyboard() {
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && S.guideOpen) {
-      closeGuide();
+    if (e.key === 'Escape') {
+      if (S.guideOpen) closeGuide();
+      else if (S.gotchaOpen) closeGotchaConfirm();
       return;
     }
-    if (S.guideOpen) return; // 引导打开时屏蔽快捷键，避免误操作
+    if (S.guideOpen) return; // 引导打开时屏蔽快捷键
     if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
@@ -1380,15 +1560,23 @@ function bindKeyboard() {
     if (key === 'f') {
       if (!D.btnFold.disabled) D.btnFold.click();
     } else if (key === 'c') {
-      if (!D.btnCall.disabled) D.btnCall.click();
-      else if (!D.btnCheck.disabled) D.btnCheck.click();
-    } else if (key === 'r') {
-      e.preventDefault();
-      D.raiseSlider.focus();
+      if (!D.btnCallcheck.disabled) D.btnCallcheck.click();
+    } else if (key === 'p') {
+      if (!D.btnPressure.disabled) D.btnPressure.click();
+    } else if (key === 'h') {
+      if (!D.btnHeavy.disabled) D.btnHeavy.click();
     } else if (key === 'a') {
       if (!D.btnAllin.disabled) D.btnAllin.click();
+    } else if (key === 'r') {
+      if (!D.btnRead.disabled) D.btnRead.click();
+    } else if (key === 'g') {
+      if (!D.btnGotcha.disabled) {
+        e.preventDefault();
+        if (S.gotchaOpen) closeGotchaConfirm();
+        else openGotchaConfirm();
+      }
     } else if (e.key === 'Enter') {
-      if (!D.btnRaise.disabled) {
+      if (!D.btnRaise.disabled && !D.raiseBox.hidden) {
         e.preventDefault();
         D.btnRaise.click();
       }
@@ -1406,6 +1594,7 @@ function bindDom() {
   D.bossFace = $('#boss-face');
   D.bossMood = $('#boss-mood');
   D.bossChips = $('#boss-chips');
+  D.bossStackFill = $('#boss-stack-fill');
   D.bossBet = $('#boss-bet');
   D.bossDealer = $('#boss-dealer');
   D.bossHole = $('#boss-hole');
@@ -1414,36 +1603,48 @@ function bindDom() {
   D.bubble = $('#boss-bubble');
   D.bubbleText = $('#bubble-text');
   D.bubbleCaret = $('#bubble-caret');
-  D.objection = $('#objection');
-  D.objRingFg = $('#obj-ring-fg');
-  D.objMs = $('#obj-ms');
-  D.btnObjection = $('#btn-objection');
-  D.objectionLine = $('#objection-line');
+  D.fragFlash = $('#frag-flash');
+
+  D.hudHand = $('#hud-hand');
+  D.hudTocall = $('#hud-tocall');
+  D.hudEff = $('#hud-eff');
+  D.hudBlind = $('#hud-blind');
+  D.hudBlindNext = $('#hud-blind-next');
+  D.hudMode = $('#hud-mode');
+  D.hudMood = $('#hud-mood');
+  D.stateHint = $('#state-hint');
+
   D.streetBadge = $('#street-badge');
   D.board = $('#board');
   D.pot = $('#pot');
   D.potValue = $('#pot-value');
+
   D.playerZone = $('#player-zone');
   D.playerHole = $('#player-hole');
   D.playerHandname = $('#player-handname');
   D.playerDealer = $('#player-dealer');
   D.playerChips = $('#player-chips');
+  D.playerStackFill = $('#player-stack-fill');
   D.playerBet = $('#player-bet');
   D.playerTocall = $('#player-tocall');
+
   D.handPill = $('#hand-pill');
   D.history = $('#history');
-  D.talk = $('#talk');
-  D.readLeftPill = $('#read-left-pill');
-  D.readLatest = $('#read-latest');
-  D.reads = $('#reads');
-  D.important = $('#important');
+  D.fragPill = $('#frag-pill');
+  D.fragments = $('#fragments');
+  D.crackPill = $('#crack-pill');
+  D.cracks = $('#cracks');
+  D.battlelog = $('#battlelog');
+
   D.abStatus = $('#ab-status');
   D.abStatusText = $('#ab-status-text');
-  D.btnCheck = $('#btn-check');
-  D.checkLabel = $('#check-label');
-  D.btnCall = $('#btn-call');
-  D.callLabel = $('#call-label');
   D.btnFold = $('#btn-fold');
+  D.btnCallcheck = $('#btn-callcheck');
+  D.callcheckLabel = $('#callcheck-label');
+  D.btnPressure = $('#btn-pressure');
+  D.pressureTo = $('#pressure-to');
+  D.btnHeavy = $('#btn-heavy');
+  D.heavyTo = $('#heavy-to');
   D.btnAllin = $('#btn-allin');
   D.allinLabel = $('#allin-label');
   D.raiseBox = $('#raise-box');
@@ -1452,14 +1653,17 @@ function bindDom() {
   D.raiseLabelTop = $('#raise-label-top');
   D.raiseBtnLabel = $('#raise-btn-label');
   D.btnRaise = $('#btn-raise');
+
+  D.mentalHint = $('#mental-hint');
   D.btnRead = $('#btn-read');
-  D.readBadge = $('#read-left-badge');
-  D.btnTaunt = $('#btn-taunt');
-  D.tauntLeft = $('#taunt-left');
-  D.btnChallenge = $('#btn-challenge');
-  D.challengeLeft = $('#challenge-left');
-  D.btnPressure = $('#btn-pressure');
-  D.pressureLeft = $('#pressure-left');
+  D.readRing = $('#read-ring');
+  D.readCd = $('#read-cd');
+  D.btnGotcha = $('#btn-gotcha');
+  D.gotchaConfirm = $('#gotcha-confirm');
+  D.btnGuessBluff = $('#btn-guess-bluff');
+  D.btnGuessStrong = $('#btn-guess-strong');
+  D.btnGuessCancel = $('#btn-guess-cancel');
+
   D.end = $('#end');
   D.endCard = D.end.querySelector('.end__card');
   D.endHeart = $('#end-heart');
@@ -1483,12 +1687,7 @@ function bindDom() {
   D.btnGuide = $('#btn-guide');
   buildGuide();
 
-  D.stateScale = $('#state-scale');
-  D.stateScaleSteps = $('#state-scale-steps');
-  D.stateHint = $('#state-hint');
-  D.bossEffects = $('#boss-effects');
-  D.mentalHint = $('#mental-hint');
-  D.readLean = $('#read-lean');
+  paintReadCd(0, true); // READ 冷却环初始态
 }
 
 async function boot(retries = 4) {
@@ -1497,6 +1696,7 @@ async function boot(retries = 4) {
     const resp = await api.state();
     if (!resp?.view || typeof resp.view !== 'object') throw new Error('服务端返回了空状态');
     S.view = clone(resp.view);
+    S.chipsRef = 0;
     render(S.view);
     syncLock();
     schedulePoll(); // 若服务端把 toAct 留给了对方，静默轮询兜底

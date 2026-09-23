@@ -1,10 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decide, assembleMods, monteCarloEquity, rollBreakingMode } from '../server/boss/ai.js';
+import {
+  decide, evaluateWeights, applyPersonality, applyEmotion,
+  assembleMods, monteCarloEquity,
+} from '../server/boss/ai.js';
 import { Boss } from '../server/boss/boss.js';
-import { Mental, STATES, SCALE, ORDER, isDownEvent, FACES, MOODS } from '../server/boss/mental.js';
-import { pickLine, claimMatches, sizeLevel, pickSpeechReact, TALK } from '../server/boss/talk.js';
-import { pickRead, LEANS, INTENT_LINES, STATE_LINES, FOG_LINES } from '../server/boss/reads.js';
+import { Emotion, STATES, SCALE, ORDER, isDownEvent, FACES, MOODS, EVENT_NAMES } from '../server/boss/mental.js';
+import { TALK, pickLine, pickWinQuip, WIN_QUIP } from '../server/boss/talk.js';
+import { makeFragment, flashMs, TRUE_FAMILIES, NOISE_POOL, DISTORTION_POOL } from '../server/boss/fragments.js';
+import { EvidenceTracker } from '../server/boss/crack.js';
+import { PlayerModel } from '../server/boss/playermodel.js';
 import { loadBalance } from '../server/battle.js';
 import { seededRng } from '../server/engine/cards.js';
 
@@ -15,351 +20,325 @@ const rngOf = (seed) => {
 
 const balance = loadBalance();
 
-// ------------------------------------------------------------------ 心理状态机
+// ============================================================ 情绪（v3 三状态）
 
-test('转移表结构合法：双向、无自环、概率在 0..1，关键边齐全', () => {
+test('情绪转移表结构合法：三状态、单向恶化、无自环、关键边齐全', () => {
+  assert.deepEqual(STATES, ['CALM', 'SHAKEN', 'TILT']);
   for (const [event, row] of Object.entries(balance.transitions)) {
     if (event === 'comment') continue;
-    for (const [from, spec] of Object.entries(row)) {
-      const [to, chance] = spec;
-      assert.ok(STATES.includes(from), `${event} 的起点 ${from} 合法`);
-      assert.ok(STATES.includes(to), `${event} 的终点 ${to} 合法`);
-      assert.notEqual(to, from, `${event}: ${from} → ${to} 不允许自环`);
-      assert.ok(chance >= 0 && chance <= 1, `${event}/${from} 概率在 0..1`);
+    assert.ok(event in EVENT_NAMES, `${event} 要有中文名`);
+    for (const [from, [to, chance]] of Object.entries(row)) {
+      assert.ok(STATES.includes(from), `${event} 起点 ${from} 合法`);
+      assert.ok(STATES.includes(to), `${event} 终点 ${to} 合法`);
+      assert.ok(ORDER[to] > ORDER[from], `${event}: ${from} → ${to} 必须单向恶化`);
+      assert.ok(chance >= 0 && chance <= 1, `${event}/${from} 概率 0..1`);
     }
   }
   const T = balance.transitions;
-  // 打击向下（含从正轨打断）
   assert.deepEqual(T.BLUFF_CAUGHT.CALM, ['SHAKEN', 1]);
-  assert.deepEqual(T.CONTRADICTION_EXPOSED.SHAKEN, ['TILT', 1]);
-  assert.deepEqual(T.BLUFF_CAUGHT.HOT, ['CALM', 0.75], '顺风被抓诈唬 → 幻灭');
-  // 赢钱向上（非线性回血）
-  assert.deepEqual(T.BIG_POT_WON.TILT, ['SHAKEN', 0.65]);
-  assert.deepEqual(T.ALL_IN_WON.BREAKING, ['TILT', 0.65]);
-  assert.deepEqual(T.WIN_STREAK.CALM, ['HOT', 0.85], '连赢爬正向轴');
-  assert.deepEqual(T.BIG_POT_WON.HOT, ['FLOW', 0.7], '得意时赢大底池 → 神了');
-  // 顺风可被打断
-  assert.deepEqual(T.HAND_LOST.FLOW, ['HOT', 1], '输一手神了就掉档');
-  // 看穿/言语类事件永不回血：所有边必须是「向下或打断正轨」
-  for (const ev of ['CONTRADICTION_EXPOSED', 'LANGUAGE_WEAKNESS_HIT', 'BLUFF_CAUGHT',
-    'CONSECUTIVE_READ_SUCCESS', 'PLAYER_BLUFF_SUCCESS']) {
-    for (const [from, [to]] of Object.entries(T[ev])) {
-      assert.ok(isDownEvent(from, to), `${ev}: ${from} → ${to} 必须向下（心理打击不回血）`);
-    }
-  }
+  assert.deepEqual(T.GOTCHA_HIT.CALM, ['SHAKEN', 1], 'GOTCHA 命中必推动摇');
+  assert.deepEqual(T.GOTCHA_STREAK.SHAKEN, ['TILT', 1], '连续正确 GOTCHA 必上头');
+  assert.deepEqual(T.ALL_IN_LOST.SHAKEN, ['TILT', 1]);
 });
 
-test('状态可以回升（赢钱事件）与护甲减伤（心理打击不吃护甲）', () => {
-  const up = new Mental({ transitions: { WIN_STREAK: { CALM: ['HOT', 1] } }, rng: () => 0.99 });
-  up.state = 'CALM';
-  assert.deepEqual(up.attempt('WIN_STREAK'), { from: 'CALM', to: 'HOT', cause: 'WIN_STREAK' });
-
-  // 护甲：HOT 对 BIG_POT_LOST ×0.45 —— 概率 0.6 被压到 0.27，rng=0.5 打不下来
-  const table = { BIG_POT_LOST: { HOT: ['SHAKEN', 0.6] } };
-  const armored = new Mental({ transitions: table, rng: () => 0.5 });
-  armored.state = 'HOT';
-  assert.equal(armored.attempt('BIG_POT_LOST', 0.45), null, '护甲兜住');
-  assert.equal(armored.state, 'HOT');
-  const naked = new Mental({ transitions: table, rng: () => 0.5 });
-  naked.state = 'HOT';
-  assert.deepEqual(naked.attempt('BIG_POT_LOST', 1), { from: 'HOT', to: 'SHAKEN', cause: 'BIG_POT_LOST' });
-});
-
-test('状态级言语抗性：得意减半、神了免疫', () => {
-  const buff = [{ skill: 'taunt', decisions: 2 }];
-  const delta = (state) => {
-    const m = assembleMods(balance, state, { buffs: buff });
-    return m.aggression - balance.mentalModifiers[state].aggression;
-  };
-  const shaken = delta('SHAKEN'); // stateScale 1.0 × speechScale 1 = 全额
-  const hot = delta('HOT');       // × speechScale 0.5 = 减半
-  const flow = delta('FLOW');     // × speechScale 0 = 免疫
-  assert.ok(hot > 0 && hot < shaken, `得意减半：SHAKEN=${shaken.toFixed(2)} HOT=${hot.toFixed(2)}`);
-  assert.equal(flow, 0, '神了言语免疫');
-});
-
-test('确定概率的转移：1.0 必发、0 必不发', () => {
-  const always = new Mental({ transitions: { X: { CALM: ['SHAKEN', 1] } }, rng: () => 0.99 });
+test('Emotion：概率 1 必发、0 必不发、终态无边则不动', () => {
+  const always = new Emotion({ transitions: { X: { CALM: ['SHAKEN', 1] } }, rng: () => 0.99 });
   assert.deepEqual(always.attempt('X'), { from: 'CALM', to: 'SHAKEN', cause: 'X' });
+  assert.equal(always.state, 'SHAKEN');
 
-  const never = new Mental({ transitions: { X: { CALM: ['SHAKEN', 0] } }, rng: () => 0.999 });
+  const never = new Emotion({ transitions: { X: { CALM: ['SHAKEN', 0] } }, rng: () => 0 });
   assert.equal(never.attempt('X'), null);
-  assert.equal(never.state, 'CALM');
 
-  // 没有定义的事件/状态 → null，状态不动
-  const m = new Mental({ transitions: {}, rng: () => 0 });
-  assert.equal(m.attempt('WHATEVER'), null);
-  assert.equal(m.state, 'CALM');
+  // TILT 是终点：任何打击在 TILT 都无边可走
+  const atTilt = new Emotion({ transitions: balance.transitions, rng: () => 0 });
+  atTilt.state = 'TILT';
+  assert.equal(atTilt.attempt('BLUFF_CAUGHT'), null);
+  assert.equal(atTilt.state, 'TILT');
 });
 
-test('判定失败会累积躁动，让后续转移更容易', () => {
-  // p=0.5，失败两次（debt 0.15→0.30）后 p≥0.8，第三次 0.3 必然成功
-  const values = [0.7, 0.8, 0.3];
-  let calls = 0;
-  const m = new Mental({ transitions: { X: { SHAKEN: ['TILT', 0.5] } }, rng: () => values[calls++] ?? 1 });
-  m.state = 'SHAKEN';
-  assert.equal(m.attempt('X'), null);
-  assert.ok(m.debt > 0, '失败要累积躁动');
-  assert.equal(m.attempt('X'), null);
-  assert.ok(m.debt >= 0.3, `躁动继续累积（实际 ${m.debt}）`);
-  assert.deepEqual(m.attempt('X'), { from: 'SHAKEN', to: 'TILT', cause: 'X' });
-  assert.equal(m.debt, 0, '转移成功后躁动回落');
-});
-
-test('四个状态都有表情和中文标签', () => {
+test('三状态的表情/标签/方向判断', () => {
   for (const s of STATES) {
-    assert.ok(FACES[s], `${s} 缺表情`);
-    assert.ok(MOODS[s], `${s} 缺标签`);
+    assert.ok(FACES[s] && MOODS[s], `${s} 缺表情或标签`);
   }
-  assert.equal(SCALE.length, 6, '情绪刻度六格');
+  assert.equal(SCALE.length, 3);
   assert.equal(isDownEvent('CALM', 'SHAKEN'), true);
-  assert.equal(isDownEvent('HOT', 'CALM'), true, '从得意掉下来也是向下');
-  assert.equal(isDownEvent('SHAKEN', 'CALM'), false, '回血是向上');
+  assert.equal(isDownEvent('SHAKEN', 'CALM'), false);
 });
 
-// ------------------------------------------------------------------ 矛盾判定
+// ============================================================ READ 碎片
 
-test('注码分档', () => {
-  const levels = balance.contradiction.sizeLevels; // [0.35, 0.55, 0.95, 1.5]
-  assert.equal(sizeLevel(100, 25, levels), 0); // 0.25 池
-  assert.equal(sizeLevel(100, 45, levels), 1); // 0.45 池
-  assert.equal(sizeLevel(100, 70, levels), 2); // 0.70 池（基线）
-  assert.equal(sizeLevel(100, 120, levels), 3); // 1.2 池
-  assert.equal(sizeLevel(100, 200, levels), 4); // 超池
-});
-
-test('言行不一：强话配小注 = 矛盾，弱话配重注 = 矛盾，中性话安全', () => {
-  assert.equal(claimMatches(2, 0), false, '放狠话 + 0.25 池 → 矛盾（规格示例）');
-  assert.equal(claimMatches(2, 1), false, '放狠话 + 0.45 池 → 矛盾');
-  assert.equal(claimMatches(2, 2), true, '放狠话 + 0.7 池 → 对得上');
-  assert.equal(claimMatches(0, 2), false, '示弱 + 0.7 池 → 矛盾');
-  assert.equal(claimMatches(0, 3), false, '示弱 + 超池 → 矛盾');
-  assert.equal(claimMatches(0, 0), true, '示弱 + 小注 → 对得上');
-  assert.equal(claimMatches(1, 2), true, '中性 + 正常注 → 对得上');
-  assert.equal(claimMatches(1, 4), false, '中性 + 超池 → 矛盾');
-});
-
-test('选词：lineBias=1 必选对不上的台词（当池子里有）', () => {
-  const levels = balance.contradiction.sizeLevels;
-  // CALM+BLUFF 全是狠话(c2) → 小注(level0) 下必产出矛盾台词
-  for (let seed = 1; seed <= 20; seed++) {
-    const line = pickLine({
-      state: 'CALM', intent: 'BLUFF', action: 'bet',
-      potBefore: 100, put: 25, lineBias: 1, rng: rngOf(seed), sizeLevels: levels,
-    });
-    assert.equal(claimMatches(line.claim, sizeLevel(100, 25, levels)), false, `lineBias=1 应选矛盾台词，得到 ${JSON.stringify(line)}`);
-  }
-  // lineBias=0 时，池内有匹配台词则必选匹配的
-  for (let seed = 1; seed <= 20; seed++) {
-    const line = pickLine({
-      state: 'CALM', intent: 'BLUFF', action: 'bet',
-      potBefore: 100, put: 70, lineBias: 0, rng: rngOf(seed), sizeLevels: levels,
-    });
-    assert.equal(claimMatches(line.claim, sizeLevel(100, 70, levels)), true, `lineBias=0 应选对得上的台词，得到 ${JSON.stringify(line)}`);
-  }
-});
-
-test('每个状态 × 意图都有台词池', () => {
-  for (const state of STATES) {
-    assert.ok(TALK[state], `${state} 缺台词池`);
-    assert.ok(TALK[state].any.length > 0);
-    for (const intent of ['VALUE', 'BLUFF', 'PROBE', 'TRAP', 'POT_CONTROL']) {
-      assert.ok(TALK[state][intent]?.length > 0, `${state} 缺 ${intent} 台词`);
-    }
-  }
-});
-
-test('言语回应：每个状态 × 技能 × 结果都有话', () => {
-  for (const state of STATES) {
-    for (const skill of ['taunt', 'pressure', 'challenge']) {
-      for (const result of ['hit', 'resist', 'whiff']) {
-        const line = pickSpeechReact(skill, state, result, rngOf(1));
-        assert.ok(typeof line === 'string' && line.length > 0, `${skill}/${state}/${result} 没有台词`);
-      }
-    }
-  }
-});
-
-// ------------------------------------------------------------------ READ
-
-test('READ 对每个状态 × 情境 × 意图都返回结构化信息', () => {
-  for (const state of STATES) {
-    for (const situation of ['bet', 'checked', 'neutral']) {
-      for (const intent of [null, 'VALUE', 'BLUFF', 'PROBE', 'TRAP', 'POT_CONTROL']) {
-        for (let seed = 1; seed <= 5; seed++) {
-          const r = pickRead({
-            state, clarity: balance.mentalModifiers[state].readClarity,
-            situation, intent, rng: rngOf(seed * 7 + state.length),
-          });
-          assert.ok(typeof r.text === 'string' && r.text.length > 0, `${state}/${situation}/${intent} 返回空`);
-          assert.ok(r.lean === null || LEANS[r.lean], `lean 只能是 null 或合法标签（得到 ${r.lean}）`);
-          assert.equal(r.leanLabel, r.lean ? LEANS[r.lean] : null);
-        }
-      }
-    }
-  }
-  // 神了：READ 必须雾化 —— 面对他的下注也读不出倾向
-  for (let seed = 1; seed <= 20; seed++) {
-    const r = pickRead({ state: 'FLOW', situation: 'bet', intent: 'BLUFF', rng: rngOf(seed) });
-    assert.equal(r.lean, null, '神了读不出倾向');
-    assert.ok(FOG_LINES.includes(r.text), '神了只能抽到雾化台词');
-  }
-  assert.ok(INTENT_LINES.BLUFF[0].length > 0 && STATE_LINES.BREAKING.length > 0 && STATE_LINES.HOT.length > 0);
-});
-
-// ------------------------------------------------------------------ 决策
-
-/** 固定情境跑 N 次决策，统计动作分布。 */
-function sample({ n = 300, seed = 1, equity, toCall = 0, potBefore = 100, playerAllIn = false, state = 'CALM', buffs = [], exposed = false, street = 'flop' }) {
-  const rng = rngOf(seed);
-  const mods = assembleMods(balance, state, { buffs, exposed });
-  const counts = { check: 0, call: 0, fold: 0, bet: 0, raise: 0, allin: 0 };
-  const amounts = [];
-  const legal = toCall > 0
-    ? [
-        { type: 'fold' },
-        { type: 'call', amount: 100 },
-        { type: 'raise', minTo: toCall + 60, maxTo: 1000 },
-        { type: 'allin', to: 1000 },
-      ]
-    : [
-        { type: 'check' },
-        { type: 'bet', minTo: 10, maxTo: 1000 },
-        { type: 'allin', to: 1000 },
-      ];
-  for (let i = 0; i < n; i++) {
-    const d = decide({
-      legal, potBefore, toCall, myCommitted: 0, myStack: 1000, street,
-      bigBlind: 10, playerAllIn, equity,
-      personality: balance.personality, mods, sizing: balance.sizing, rng,
-    });
-    counts[d.action] = (counts[d.action] ?? 0) + 1;
-    if (d.amount) amounts.push(d.amount);
-  }
-  const total = n;
+function fragCtx(over = {}) {
   return {
-    foldRate: counts.fold / total,
-    callRate: counts.call / total,
-    raiseRate: (counts.raise + counts.allin) / total,
-    betRate: (counts.bet + counts.allin) / total,
-    avgAmount: amounts.length ? amounts.reduce((a, b) => a + b, 0) / amounts.length : 0,
-    counts,
+    state: 'CALM', intent: null, equity: 0.5, street: 'flop',
+    execution: false, balance, rng: rngOf(1), ...over,
   };
 }
 
-test('强牌不弃：equity 0.8 面对下注几乎不 fold', () => {
-  const s = sample({ equity: 0.8, toCall: 60, seed: 12 });
-  assert.ok(s.foldRate < 0.1, `foldRate=${s.foldRate}`);
-  assert.ok(s.raiseRate + s.callRate > 0.9);
+test('碎片按情绪取比例：CALM 噪音多，TILT 真话与错觉密集', () => {
+  const count = (state, n = 400) => {
+    const c = { TRUE: 0, NOISE: 0, DISTORTION: 0 };
+    const r = seededRng(7);
+    for (let i = 0; i < n; i++) {
+      const f = makeFragment(fragCtx({ state, intent: 'BLUFF', rng: () => r.next() }));
+      c[f.type] += 1;
+    }
+    return c;
+  };
+  const calm = count('CALM');
+  const tilt = count('TILT');
+  assert.ok(calm.NOISE > calm.TRUE, `CALM 噪音应多于真话（${calm.NOISE} vs ${calm.TRUE}）`);
+  assert.ok(tilt.TRUE > calm.TRUE * 1.5, `TILT 真话应显著多于 CALM（${tilt.TRUE} vs ${calm.TRUE}）`);
+  assert.ok(tilt.TRUE + tilt.DISTORTION > (calm.TRUE + calm.DISTORTION) * 1.3, 'TILT 信息更密集');
 });
 
-test('烂牌价格差必弃：equity 0.15 面对大注以 fold 为主', () => {
-  const s = sample({ equity: 0.15, toCall: 60, potBefore: 100, seed: 13 });
-  assert.ok(s.foldRate > 0.55, `foldRate=${s.foldRate}`);
-});
-
-test('挑衅真的让 Boss 更凶：Raise 频率上升', () => {
-  const base = sample({ equity: 0.5, toCall: 40, state: 'SHAKEN', seed: 21 });
-  const taunted = sample({ equity: 0.5, toCall: 40, state: 'SHAKEN', buffs: [{ skill: 'taunt', decisions: 2 }], seed: 21 });
-  assert.ok(taunted.raiseRate > base.raiseRate + 0.05,
-    `挑衅后 raise 应明显变多：base=${base.raiseRate.toFixed(2)} taunt=${taunted.raiseRate.toFixed(2)}`);
-});
-
-test('施压真的让 Boss 更容易退缩：Fold 频率上升、Call 下降', () => {
-  // 边缘牌（0.30）面对中等下注：价格一般、牌力一般 —— 施压最容易撬动的地方
-  const base = sample({ equity: 0.3, toCall: 50, potBefore: 100, state: 'SHAKEN', seed: 22 });
-  const pressured = sample({ equity: 0.3, toCall: 50, potBefore: 100, state: 'SHAKEN', buffs: [{ skill: 'pressure', decisions: 2 }], seed: 22 });
-  assert.ok(pressured.foldRate > base.foldRate + 0.1,
-    `施压后 fold 应明显变多：base=${base.foldRate.toFixed(2)} pressure=${pressured.foldRate.toFixed(2)}`);
-  assert.ok(pressured.callRate < base.callRate, '施压后 call 应下降');
-});
-
-test('TILT 比 CALM 更敢演、注更大', () => {
-  const calm = sample({ equity: 0.3, state: 'CALM', seed: 31 });
-  const tilt = sample({ equity: 0.3, state: 'TILT', seed: 31 });
-  assert.ok(tilt.betRate > calm.betRate + 0.1, `TILT 开火应更频繁：CALM=${calm.betRate.toFixed(2)} TILT=${tilt.betRate.toFixed(2)}`);
-  assert.ok(tilt.avgAmount > calm.avgAmount * 1.15, `TILT 注应更大：CALM=${calm.avgAmount.toFixed(0)} TILT=${tilt.avgAmount.toFixed(0)}`);
-});
-
-test('全下对抗：TILT 比 CALM 更愿意接', () => {
-  const calm = sample({ equity: 0.24, toCall: 300, potBefore: 600, playerAllIn: true, state: 'CALM', seed: 41 });
-  const tilt = sample({ equity: 0.24, toCall: 300, potBefore: 600, playerAllIn: true, state: 'TILT', seed: 41 });
-  assert.ok(tilt.callRate > calm.callRate + 0.4,
-    `TILT 应更敢接全下：CALM call=${calm.callRate.toFixed(2)} TILT call=${tilt.callRate.toFixed(2)}`);
-});
-
-test('异议命中后本手行为偏移（exposed）', () => {
-  const base = sample({ equity: 0.4, state: 'SHAKEN', seed: 51 });
-  const exposed = sample({ equity: 0.4, state: 'SHAKEN', exposed: true, seed: 51 });
-  assert.ok(exposed.betRate + exposed.raiseRate >= base.betRate + base.raiseRate - 0.001,
-    '点破后攻击性不应下降');
-  assert.ok(exposed.avgAmount >= base.avgAmount * 0.999, '点破后注码不应变小');
-});
-
-test('BREAKING 每次决策抽一种失控模式', () => {
-  const modes = new Set();
-  for (let seed = 1; seed <= 60; seed++) {
-    const mode = rollBreakingMode(balance, rngOf(seed));
-    assert.ok(mode && typeof mode === 'object');
-    modes.add(JSON.stringify(mode));
+test('只有 TRUE 带标签；类型与标签绝不为 NOISE/DISTORTION 所带', () => {
+  const r = seededRng(11);
+  for (let i = 0; i < 300; i++) {
+    const f = makeFragment(fragCtx({ state: 'TILT', intent: 'VALUE', rng: () => r.next() }));
+    if (f.type === 'TRUE') {
+      assert.ok(Array.isArray(f.tags) && f.tags.length > 0, 'TRUE 必须带标签');
+      assert.ok(f.tags.every((t) => t in TRUE_FAMILIES), `未知标签 ${f.tags}`);
+      assert.ok(f.strength > 0.4);
+    } else {
+      assert.deepEqual(f.tags, [], `${f.type} 不能带标签`);
+      assert.equal(f.critical, false, '非 TRUE 不可能 Critical');
+    }
+    assert.ok(typeof f.text === 'string' && f.text.length > 0);
   }
-  assert.ok(modes.size >= 2, '应出现多种失控模式');
+});
+
+test('TRUE 碎片由 Boss 真实处境决定：BLUFF 意图漏弱点，VALUE 意图漏强牌', () => {
+  const r = seededRng(13);
+  const weakTags = new Set(['wants_fold', 'fear_call', 'weak_hand', 'missed_board', 'draw']);
+  const strongTags = new Set(['strong_hand', 'call_welcome', 'trap', 'board_lock', 'overconfidence']);
+  for (let i = 0; i < 200; i++) {
+    const bluff = makeFragment(fragCtx({ state: 'SHAKEN', intent: 'BLUFF', rng: () => r.next() }));
+    if (bluff.type === 'TRUE') assert.ok(bluff.tags.every((t) => weakTags.has(t)), `BLUFF 意图不得漏强牌标签: ${bluff.tags}`);
+    const value = makeFragment(fragCtx({ state: 'SHAKEN', intent: 'VALUE', equity: 0.8, rng: () => r.next() }));
+    if (value.type === 'TRUE') assert.ok(value.tags.every((t) => strongTags.has(t)), `VALUE 意图不得漏弱点标签: ${value.tags}`);
+  }
+  // Boss 还没做过重要行动 → 没有 intent 可泄漏，绝不产出 TRUE
+  for (let i = 0; i < 100; i++) {
+    const f = makeFragment(fragCtx({ intent: null, rng: () => r.next() }));
+    assert.notEqual(f.type, 'TRUE', '没有 intent 就没有 TRUE');
+  }
+});
+
+test('Critical：单条高强度真话，EXECUTION 显示更快', () => {
+  let criticals = 0;
+  const r = seededRng(17);
+  for (let i = 0; i < 400; i++) {
+    const f = makeFragment(fragCtx({ state: 'TILT', intent: 'BLUFF', execution: true, rng: () => r.next() }));
+    if (f.critical) {
+      criticals += 1;
+      assert.equal(f.type, 'TRUE');
+      assert.ok(f.strength >= balance.read.criticalStrength, 'Critical 必须是高强度');
+    }
+  }
+  assert.ok(criticals > 0, 'TILT 高强度池里应当能出 Critical');
+
+  assert.equal(flashMs('TILT', balance, false), balance.read.flashMs.TILT);
+  assert.equal(flashMs('TILT', balance, true), Math.round(balance.read.flashMs.TILT * balance.read.executionFlashScale));
+  assert.ok(NOISE_POOL.length > 0 && Object.keys(DISTORTION_POOL).length === 3);
+});
+
+// ============================================================ CRACK 证据链
+
+test('CRACK：两枚相关标签成链，链成即清空，Critical 单条直爆', () => {
+  const tracker = new EvidenceTracker(balance.cracks);
+  assert.equal(tracker.add({ type: 'NOISE', tags: [], strength: 0, critical: false }, 1), null);
+
+  const t1 = tracker.add({ type: 'TRUE', tags: ['wants_fold'], strength: 0.7, critical: false }, 1);
+  assert.equal(t1, null, '一枚标签还不够');
+  const t2 = tracker.add({ type: 'TRUE', tags: ['weak_hand'], strength: 0.6, critical: false }, 1);
+  assert.ok(t2, '两枚相关标签 → CRACK');
+  assert.equal(t2.kind, 'WEAKNESS');
+  assert.deepEqual(t2.evidence.sort(), ['wants_fold', 'weak_hand']);
+  assert.deepEqual(tracker.snapshot(), [], '链条兑现后清空');
+
+  // 强牌链
+  const tracker2 = new EvidenceTracker(balance.cracks);
+  tracker2.add({ type: 'TRUE', tags: ['strong_hand'], strength: 0.7, critical: false }, 2);
+  const s = tracker2.add({ type: 'TRUE', tags: ['trap'], strength: 0.8, critical: false }, 2);
+  assert.equal(s.kind, 'STRENGTH');
+
+  // Critical Tell：单条直接成链
+  const tracker3 = new EvidenceTracker(balance.cracks);
+  const c = tracker3.add({ type: 'TRUE', tags: ['wants_fold'], strength: 0.9, critical: true }, 3);
+  assert.ok(c);
+  assert.equal(c.kind, 'CRITICAL');
+  assert.equal(c.critical, true);
+});
+
+// ============================================================ 三层决策
+
+function decideCtx(over = {}) {
+  const toCall = over.toCall ?? 0;
+  const legal = over.legal ?? (toCall > 0
+    ? [{ type: 'fold' }, { type: 'call', amount: 100 }, { type: 'raise', minTo: toCall + 60, maxTo: 1000 }, { type: 'allin', to: 1000 }]
+    : [{ type: 'check' }, { type: 'bet', minTo: 10, maxTo: 1000 }, { type: 'allin', to: 1000 }]);
+  return {
+    legal, potBefore: 100, toCall, myCommitted: 0, myStack: 1000, street: 'flop',
+    bigBlind: 10, playerAllIn: false, equity: 0.5,
+    personality: balance.personality, mods: balance.emotions.CALM, sizing: balance.sizing,
+    rng: rngOf(5), ...over,
+  };
+}
+
+test('Layer1 评估：胜率越高越敢接越不弃（理性基础）', () => {
+  const lo = evaluateWeights({ equity: 0.2, potBefore: 100, toCall: 60, sizing: balance.sizing });
+  const hi = evaluateWeights({ equity: 0.8, potBefore: 100, toCall: 60, sizing: balance.sizing });
+  assert.ok(hi.w.fold < lo.w.fold, '高胜率更不弃');
+  assert.ok(hi.w.call > lo.w.call, '高胜率更敢接');
+  assert.ok(hi.valueOpp && !lo.valueOpp, '机会标记按胜率划分');
+  assert.ok(lo.bluffOpp && !hi.bluffOpp);
+  assert.ok(lo.potOdds > 0.3 && lo.potOdds < 0.45, '底池赔率≈60/160');
+});
+
+test('Layer2 人格：DECEIVER 压低弃牌、抬高加注、开启诈唬权重 + 玩家模型适应', () => {
+  const ev = evaluateWeights({ equity: 0.3, potBefore: 100, toCall: 60, sizing: balance.sizing });
+  const neutralFold = ev.w.fold;
+  const neutralRaise = ev.w.raiseValue;
+  applyPersonality(ev, balance.personality, null, 0);
+  assert.ok(ev.w.fold < neutralFold, 'DECEIVER 比中性更少弃');
+  assert.ok(ev.w.raiseValue > neutralRaise, 'DECEIVER 比中性更敢加');
+  assert.ok(ev.w.bluff > 0, '有诈唬机会就开诈唬权重');
+
+  // Player Model 适应：玩家 READ 后爱开大 → 面对高压不再轻易弃
+  const model = new PlayerModel();
+  for (let i = 0; i < 5; i++) {
+    model.record('read');
+    model.record('action', { action: 'heavy', facingBet: true });
+  }
+  assert.equal(model.adaptation().noFoldVsHeavy, true);
+  const ev2 = evaluateWeights({ equity: 0.3, potBefore: 100, toCall: 60, sizing: balance.sizing });
+  const base = ev2.w.fold;
+  applyPersonality(ev2, balance.personality, model, 1.2);
+  assert.ok(ev2.w.fold <= base * 0.5, '适应后面对高压几乎不弃');
+});
+
+test('Layer3 情绪：TILT 比 CALM 更凶、更敢接、方差更大', () => {
+  const mk = (state) => {
+    const ev = evaluateWeights({ equity: 0.45, potBefore: 100, toCall: 50, sizing: balance.sizing });
+    applyPersonality(ev, balance.personality, null, 0.5);
+    applyEmotion(ev, balance.emotions[state]);
+    return ev;
+  };
+  const calm = mk('CALM');
+  const tilt = mk('TILT');
+  assert.ok(tilt.w.fold < calm.w.fold, 'TILT 更少弃');
+  assert.ok(tilt.w.call > calm.w.call, 'TILT 更敢接');
+  assert.ok(tilt.w.raiseValue > calm.w.raiseValue, 'TILT 更敢加');
+  assert.ok(tilt.p.variance > calm.p.variance, 'TILT 方差更大');
+  assert.ok(tilt.p.bluffFrequency > calm.p.bluffFrequency, 'TILT 诈唬更多');
+});
+
+test('采样统计：TILT 比 CALM 更爱开火，注也更大', () => {
+  const sample = (state, n = 300, equity = 0.3) => {
+    const rng = rngOf(31);
+    let bets = 0; let sizeSum = 0; let raises = 0;
+    for (let i = 0; i < n; i++) {
+      const d = decide(decideCtx({ equity, mods: balance.emotions[state], rng }));
+      if (d.action === 'bet' || d.action === 'raise') { bets += 1; sizeSum += d.amount ?? 0; }
+      if (d.action === 'raise') raises += 1;
+    }
+    return { betRate: bets / n, avgSize: sizeSum / Math.max(1, bets), raiseRate: raises / n };
+  };
+  const calm = sample('CALM');
+  const tilt = sample('TILT');
+  assert.ok(tilt.betRate > calm.betRate + 0.1, `TILT 开火应更频繁：CALM=${calm.betRate.toFixed(2)} TILT=${tilt.betRate.toFixed(2)}`);
+  assert.ok(tilt.avgSize > calm.avgSize * 1.1, `TILT 注应更大：CALM=${calm.avgSize.toFixed(0)} TILT=${tilt.avgSize.toFixed(0)}`);
+});
+
+test('决策稳定性：强牌几乎不弃、烂牌价格差必弃、全下抗性随风险上调', () => {
+  const strong = decide(decideCtx({ equity: 0.8, toCall: 60, rng: rngOf(61) }));
+  assert.notEqual(strong.action, 'fold');
+  let folds = 0;
+  for (let i = 0; i < 100; i++) {
+    const d = decide(decideCtx({ equity: 0.15, toCall: 60, potBefore: 100, rng: rngOf(61 + i) }));
+    if (d.action === 'fold') folds += 1;
+  }
+  assert.ok(folds > 70, `烂牌应以弃为主（${folds}/100）`);
+
+  // COUNTER 增益（assembleMods extra）确实抬高攻击性
+  const counterMods = assembleMods(balance, 'CALM', { extra: balance.counter });
+  const baseMods = assembleMods(balance, 'CALM', {});
+  assert.ok(counterMods.aggression > baseMods.aggression, 'COUNTER 增益进 mods');
+  const ev = evaluateWeights({ equity: 0.5, potBefore: 100, toCall: 50, sizing: balance.sizing });
+  applyPersonality(ev, balance.personality, null, 0.5);
+  const before = ev.w.raiseValue;
+  applyEmotion(ev, counterMods);
+  assert.ok(ev.w.raiseValue > before, 'COUNTER 阶段加注权重更高');
 });
 
 test('蒙特卡洛胜率方向正确', () => {
   const aa = monteCarloEquity(['As', 'Ad'], [], rngOf(7), 300);
   const r72 = monteCarloEquity(['7s', '2c'], [], rngOf(7), 300);
-  assert.ok(aa > 0.75 && aa < 0.95, `AA 翻前胜率应约 0.85，实际 ${aa}`);
-  assert.ok(r72 > 0.25 && r72 < 0.5, `72o 翻前胜率应明显偏低，实际 ${r72}`);
+  assert.ok(aa > 0.75 && aa < 0.95, `AA ≈0.85，实际 ${aa}`);
+  assert.ok(r72 > 0.25 && r72 < 0.5, `72o 明显偏低，实际 ${r72}`);
   assert.ok(aa > r72 + 0.3);
 });
 
-// ------------------------------------------------------------------ Boss 本体
-
-test('Boss：Buff 按决策次数衰减，状态表情正确', () => {
-  const boss = new Boss({ balance, rng: rngOf(61) });
-  boss.applySpeechBuff('taunt');
-  assert.equal(boss.buffs.length, 1);
-  const ctx = {
-    legal: [{ type: 'check' }, { type: 'bet', minTo: 10, maxTo: 500 }, { type: 'allin', to: 500 }],
-    potBefore: 100, toCall: 0, myCommitted: 0, myStack: 500, street: 'flop', bigBlind: 10,
-    hole: ['As', 'Kd'], board: ['2c', '7d'], equity: 0.5,
-  };
-  boss.decide(ctx);
-  assert.equal(boss.buffs[0]?.decisions, 1, '消耗一次');
-  boss.decide(ctx);
-  assert.equal(boss.buffs.length, 0, '两次之后 Buff 消失');
-
-  assert.equal(boss.state, 'CALM');
-  assert.equal(boss.face, FACES.CALM);
-  boss.mental.state = 'BREAKING';
-  assert.equal(boss.mood, MOODS.BREAKING);
+test('翻前 BB 溢价加注尺度合理（2.6bb ± 抖动）', () => {
+  let opens = 0;
+  for (let i = 0; i < 60; i++) {
+    const d = decide(decideCtx({
+      equity: 0.8, toCall: 0, street: 'preflop', potBefore: 30, myCommitted: 20,
+      legal: [{ type: 'raise', minTo: 40, maxTo: 1000 }, { type: 'allin', to: 1000 }],
+      mods: balance.emotions.CALM, rng: rngOf(71 + i),
+    }));
+    if (d.action === 'raise') {
+      opens += 1;
+      assert.ok(d.amount >= 40 && d.amount <= 120, `BB 溢价加注应在 40–120，实际 ${d.amount}`);
+    }
+  }
+  assert.ok(opens > 40, '强牌在 BB 溢价位应当常加注');
 });
 
-test('Boss：下注类动作永远配台词，弃牌从不说话', () => {
-  const boss = new Boss({ balance, rng: () => 0.5 });
+// ============================================================ 台词与赢牌
+
+test('台词池：三状态 × 五意图 + any 齐全，选词返回非空', () => {
   for (const state of STATES) {
-    boss.mental.state = state;
-    const betTalk = boss.talkFor({ action: 'bet', intent: 'BLUFF', potBefore: 100, put: 60, street: 'flop' });
-    assert.ok(betTalk && betTalk.text.length > 0, `${state} 下注必须说话`);
-    const foldTalk = boss.talkFor({ action: 'fold', intent: 'POT_CONTROL', potBefore: 100, put: 0, street: 'flop' });
-    assert.equal(foldTalk, null, '弃牌是安静的');
+    assert.ok(TALK[state], `${state} 缺台词池`);
+    for (const intent of ['VALUE', 'BLUFF', 'PROBE', 'TRAP', 'CONTROL']) {
+      assert.ok(TALK[state][intent]?.length > 0, `${state} 缺 ${intent}`);
+    }
+    assert.ok(TALK[state].any.length > 0);
+    const line = pickLine({ state, intent: 'BLUFF', rng: rngOf(3) });
+    assert.ok(typeof line === 'string' && line.length > 0);
   }
+  for (const s of STATES) assert.ok(WIN_QUIP[s]?.length > 0, `${s} 缺赢牌台词`);
+  assert.equal(pickWinQuip('CALM', 0, rngOf(1)), null, '概率 0 不说话');
+  assert.ok(pickWinQuip('CALM', 1, rngOf(1))?.length > 0, '概率 1 必说话');
 });
 
-test('READ 优先给 live intent（本街刚下注的倾向）', () => {
-  const boss = new Boss({ balance, rng: rngOf(71) });
-  boss.noteAction({ action: 'raise', intent: 'BLUFF', street: 'flop' });
-  let leanSeen = null;
-  for (let i = 0; i < 16 && !leanSeen; i++) {
-    const r = boss.read({ street: 'flop' });
-    assert.ok(r.text.length > 0);
-    if (r.lean) leanSeen = r;
+// ============================================================ Player Model
+
+test('Player Model：习惯识别、弃率估计、把握度与 BUSTED 门槛', () => {
+  const m = new PlayerModel();
+  assert.equal(m.confidence(), 0);
+  assert.equal(m.bustedReady(0.7), false);
+
+  // READ → HEAVY 习惯（§26 针对性）
+  for (let i = 0; i < 3; i++) {
+    m.record('read');
+    m.record('action', { action: 'heavy', facingBet: true });
+    m.record('action', { action: 'pressure', facingBet: true });
+    m.record('pressure');
+    m.record('action', { action: 'heavy' });
   }
-  assert.ok(leanSeen, '面对他的加注，BLUFF 意图应当能读出倾向');
-  assert.equal(leanSeen.lean, 'fold');
-  assert.equal(leanSeen.leanLabel, '他想让你弃牌');
-  // 换街之后 live intent 失效，回落到状态信息（无 lean）
-  const neutral = boss.read({ street: 'river' });
-  assert.ok(neutral.text.length > 0);
+  assert.equal(m.adaptation().noFoldVsHeavy, true, '识别 READ→HEAVY 习惯');
+  assert.equal(m.adaptation().trapSuspect, true, '识别 压力→重注 习惯');
+
+  // 弃率估计在 [0,1]，样本越多越可信
+  for (let i = 0; i < 12; i++) m.record('action', { action: 'fold', facingBet: true });
+  const fold = m.estFoldVsBet();
+  assert.ok(fold > 0.5, `爱弃的玩家估计弃率应偏高（${fold.toFixed(2)}）`);
+  assert.ok(m.confidence() >= 0.7, '20+ 决策后把握度过门槛');
+  assert.equal(m.bustedReady(0.7), true);
+
+  m.record('gotcha', { correct: false });
+  assert.equal(m.s.gotchaWrong, 1);
+  m.record('showdown', { playerWon: true, playerAggressive: true });
+  assert.equal(m.s.wonShowdown, 1);
 });

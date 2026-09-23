@@ -1,81 +1,107 @@
 {
-  "comment": "《allin》原型全部可调数值。六状态情绪刻度：神了(正极端·纯利) → 得意 → 冷静 → 动摇 → 上头 → 崩坏(负极端·纯弊)。除两端外皆双刃。",
+  "comment": "《ALL IN》v3 全部可调数值。不对称筹码 1:10 开局，盲注按手数升级；情绪三状态单向 CALM→SHAKEN→TILT；READ 碎片（TRUE/NOISE/DISTORTION）→ 证据链 CRACK → GOTCHA（BLUFF/STRONG）→ EXECUTION / COUNTER。",
 
-  "stacks": { "player": 1000, "boss": 1000 },
-  "blinds": { "small": 5, "big": 10 },
+  "stacks": { "player": 500, "boss": 5000 },
+  "blindSchedule": [
+    { "firstHand": 1, "lastHand": 2, "sb": 10, "bb": 20 },
+    { "firstHand": 3, "lastHand": 4, "sb": 20, "bb": 40 },
+    { "firstHand": 5, "lastHand": 6, "sb": 40, "bb": 80 },
+    { "firstHand": 7, "lastHand": 8, "sb": 80, "bb": 160 },
+    { "firstHand": 9, "lastHand": 10, "sb": 120, "bb": 240 },
+    { "firstHand": 11, "lastHand": 9999, "sb": 160, "bb": 320 }
+  ],
 
   "read": {
-    "perHand": 2
+    "cooldownMs": 400,
+    "burstChanceInExecution": 0.25,
+    "flashMs": { "CALM": 1400, "SHAKEN": 1100, "TILT": 800 },
+    "executionFlashScale": 0.6,
+    "mix": {
+      "CALM":   { "TRUE": 0.25, "NOISE": 0.5, "DISTORTION": 0.25 },
+      "SHAKEN": { "TRUE": 0.45, "NOISE": 0.2, "DISTORTION": 0.35 },
+      "TILT":   { "TRUE": 0.5,  "NOISE": 0.1, "DISTORTION": 0.4 }
+    },
+    "criticalChance": 0.07,
+    "criticalStrength": 0.85
   },
 
-  "speech": {
-    "perHand": { "taunt": 1, "challenge": 1, "pressure": 1 },
-    "buffDecisions": 2
+  "cracks": {
+    "comment": "证据链规则（all-of）：自上次 Boss 重要行动以来累计的 TRUE 标签命中任一规则即 CRACK；CRITICAL 为单条高强度碎片直爆。",
+    "rules": [
+      { "kind": "WEAKNESS", "need": ["wants_fold", "weak_hand"] },
+      { "kind": "WEAKNESS", "need": ["wants_fold", "fear_call"] },
+      { "kind": "WEAKNESS", "need": ["wants_fold", "missed_board"] },
+      { "kind": "WEAKNESS", "need": ["wants_fold", "draw"] },
+      { "kind": "WEAKNESS", "need": ["fear_call", "weak_hand"] },
+      { "kind": "WEAKNESS", "need": ["missed_board", "weak_hand"] },
+      { "kind": "STRENGTH", "need": ["strong_hand", "trap"] },
+      { "kind": "STRENGTH", "need": ["strong_hand", "call_welcome"] },
+      { "kind": "STRENGTH", "need": ["trap", "call_welcome"] },
+      { "kind": "STRENGTH", "need": ["strong_hand", "board_lock"] }
+    ]
+  },
+
+  "gotcha": {
+    "streakForTilt": 2
+  },
+
+  "counter": {
+    "comment": "GOTCHA 判断错误 / BUSTED 后，Boss 本手内的攻击强度提升（COUNTER 高压阶段）",
+    "aggression": 0.35,
+    "betSize": 0.3,
+    "bluff": 0.2,
+    "risk": 0.15,
+    "variance": 0.1
+  },
+
+  "busted": {
+    "confidence": 0.7,
+    "chance": 0.12,
+    "minHand": 3,
+    "cooldownHands": 4,
+    "line": "我看穿你了 —— 全部下注！"
   },
 
   "personality": {
     "id": "deceiver",
     "name": "千面",
     "avatar": "🎭",
-    "tagline": "欺骗型。靠语言和下注制造假象，最怕被看穿。",
+    "tagline": "DECEIVER · 欺骗型：Bluff High / Aggression M-H / Risk M / Trap High / Stability M",
+    "bluffFrequency": 0.35,
+    "raiseFrequency": 0.45,
+    "aggression": 0.65,
+    "callThreshold": 0.48,
+    "foldThreshold": 0.28,
     "normalBetSize": 0.7,
-    "bluffFrequency": 0.2,
-    "raiseFrequency": 0.35,
-    "callThreshold": 0.5,
-    "foldThreshold": 0.3,
-    "aggression": 0.55
+    "trapChance": 0.2,
+    "stability": 0.5
   },
 
-  "mentalModifiers": {
-    "FLOW": {
-      "bluff": -0.1, "raiseFreq": 0, "betSize": 0.05, "aggression": 0.05,
-      "foldThreshold": 0.1, "callThreshold": 0.05, "risk": -0.05, "variance": 0.05,
-      "trapChance": 0.3, "lineBias": 0, "readClarity": -1,
-      "readFog": true, "speechScale": 0, "armor": {},
-      "hint": "手风正热 · 读不出、说不动、尺度精准 —— 别硬碰，弃牌等他凉"
-    },
-    "HOT": {
-      "bluff": 0.12, "raiseFreq": 0.05, "betSize": 0.15, "aggression": 0.1,
-      "foldThreshold": -0.03, "callThreshold": -0.06, "risk": 0.1, "variance": 0.2,
-      "trapChance": 0.1, "lineBias": 0.3, "readClarity": 0,
-      "readFog": false, "speechScale": 0.5,
-      "armor": { "BIG_POT_LOST": 0.45, "ALL_IN_LOST": 0.5 },
-      "hint": "得意忘形 · 价值注更狠、敢 hero call、也会空城大注 —— 别 bluff 他，抓他的大注"
-    },
+  "emotions": {
     "CALM": {
       "bluff": 0.0, "raiseFreq": 0.0, "betSize": 0.0, "aggression": 0.0,
       "foldThreshold": 0.0, "callThreshold": 0.0, "risk": 0.0, "variance": 0.15,
-      "trapChance": 0.12, "lineBias": 0.18, "readClarity": 0,
-      "readFog": false, "speechScale": 1, "armor": {},
-      "hint": "冷静难读、也不送分 —— 想赢大池，先把他搞出舒适区"
+      "trapChance": 0.0, "hint": "冷静克制 · 碎片泄漏少、噪音多 —— 多读几条再下判断"
     },
     "SHAKEN": {
-      "bluff": 0.1, "raiseFreq": 0.05, "betSize": 0.1, "aggression": 0.1,
-      "foldThreshold": -0.03, "callThreshold": -0.04, "risk": 0.05, "variance": 0.25,
-      "trapChance": 0.08, "lineBias": 0.3, "readClarity": 0,
-      "readFog": false, "speechScale": 1, "armor": {},
-      "hint": "动摇 · 漏话变多、也更凶 —— 多读、多抓，破绽最多的状态"
+      "bluff": 0.12, "raiseFreq": 0.08, "betSize": 0.1, "aggression": 0.12,
+      "foldThreshold": -0.03, "callThreshold": -0.04, "risk": 0.08, "variance": 0.28,
+      "trapChance": 0.05, "hint": "动摇 · 真实意图开始泄漏，碎片里真话变多"
     },
     "TILT": {
-      "bluff": 0.25, "raiseFreq": 0.2, "betSize": 0.3, "aggression": 0.3,
-      "foldThreshold": -0.08, "callThreshold": -0.08, "risk": 0.25, "variance": 0.4,
-      "trapChance": 0.05, "lineBias": 0.4, "readClarity": 1,
-      "readFog": false, "speechScale": 1, "armor": {},
-      "hint": "上头 · 更大注、更少弃、爱接全下 —— 大注推他，别当胆小鬼"
-    },
-    "BREAKING": {
-      "bluff": 0.2, "raiseFreq": 0.25, "betSize": 0.35, "aggression": 0.35,
-      "foldThreshold": -0.05, "callThreshold": -0.1, "risk": 0.3, "variance": 0.75,
-      "trapChance": 0.05, "lineBias": 0.55, "readClarity": 2,
-      "readFog": false, "speechScale": 1, "armor": {},
-      "hint": "崩坏 · 信息全漏、行为失控 —— 全力收割"
+      "bluff": 0.28, "raiseFreq": 0.22, "betSize": 0.3, "aggression": 0.32,
+      "foldThreshold": -0.08, "callThreshold": -0.08, "risk": 0.28, "variance": 0.45,
+      "trapChance": 0.05, "hint": "上头 · 真话密集、同时满嘴错觉 —— 最容易读，也最容易骗到你"
     }
   },
 
-  "breakingModes": {
-    "hyperAggressive": { "weight": 0.45, "aggression": 0.4, "bluff": 0.15, "betSize": 0.3 },
-    "hyperTight": { "weight": 0.4, "aggression": -0.35, "bluff": -0.1, "foldThreshold": 0.2, "betSize": -0.2 },
-    "erratic": { "weight": 0.15, "aggression": 0.0, "bluff": 0.1, "betSize": 0.1 }
+  "transitions": {
+    "comment": "v3 三状态单向：CALM→SHAKEN→TILT。胜负筹码不直接改情绪；GOTCHA 与被看穿类事件是主推手。",
+    "BLUFF_CAUGHT":   { "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 0.3] },
+    "GOTCHA_HIT":     { "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 0.45] },
+    "GOTCHA_STREAK":  { "CALM": ["SHAKEN", 0.8], "SHAKEN": ["TILT", 1.0] },
+    "BIG_POT_LOST":   { "CALM": ["SHAKEN", 0.7], "SHAKEN": ["TILT", 0.7] },
+    "ALL_IN_LOST":    { "CALM": ["SHAKEN", 0.9], "SHAKEN": ["TILT", 1.0] }
   },
 
   "sizing": {
@@ -85,76 +111,13 @@
     "sizeJitter": 0.3,
     "preflopOpenBb": 2.6,
     "probeRatio": 0.33,
-    "overbetCeiling": 1.6
+    "overbetCeiling": 1.6,
+    "pressureFrac": 0.5,
+    "heavyFrac": 1.0
   },
 
-  "contradiction": {
-    "sizeLevels": [0.35, 0.55, 0.95, 1.5],
-    "behaviorOverbet": 1.0,
-    "windowBaseMs": 1600,
-    "windowPerCharMs": 30,
-    "graceMs": 900
-  },
-
-  "bigPotLostRatio": 0.25,
-  "winStreakHands": 3,
-  "winQuipChance": 0.55,
-
-  "speechEffects": {
-    "taunt": {
-      "aggression": 0.3, "raiseFreq": 0.25, "bluff": 0.15, "betSize": 0.2, "risk": 0.15,
-      "stateScale": { "CALM": 0.5, "SHAKEN": 1.0, "TILT": 1.6, "BREAKING": 1.3, "HOT": 1.0, "FLOW": 1.0 }
-    },
-    "pressure": {
-      "callWeight": -0.4, "foldWeight": 0.6, "aggression": -0.15,
-      "stateScale": { "CALM": 0.4, "SHAKEN": 1.0, "TILT": 1.2, "BREAKING": 1.5, "HOT": 1.0, "FLOW": 1.0 }
-    },
-    "challenge": {
-      "transitionChance": { "CALM": 0.85, "SHAKEN": 0.7, "TILT": 0.4, "BREAKING": 0.4, "HOT": 0.7, "FLOW": 0.4 }
-    }
-  },
-
-  "transitions": {
-    "comment": "双向转移表：打击向下（含从正轨打断），赢钱向上。看穿/言语类事件永不回血。",
-
-    "BLUFF_CAUGHT": {
-      "HOT": ["CALM", 0.75], "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 0.4], "TILT": ["BREAKING", 0.2]
-    },
-    "PLAYER_BLUFF_SUCCESS": {
-      "HOT": ["CALM", 0.6], "CALM": ["SHAKEN", 0.55], "SHAKEN": ["TILT", 0.3], "TILT": ["BREAKING", 0.1]
-    },
-    "CONTRADICTION_EXPOSED": {
-      "HOT": ["CALM", 0.85], "CALM": ["SHAKEN", 1.0], "SHAKEN": ["TILT", 1.0], "TILT": ["BREAKING", 0.55]
-    },
-    "LANGUAGE_WEAKNESS_HIT": {
-      "HOT": ["CALM", 0.7], "CALM": ["SHAKEN", 0.85], "SHAKEN": ["TILT", 0.7], "TILT": ["BREAKING", 0.3]
-    },
-    "CONSECUTIVE_READ_SUCCESS": {
-      "HOT": ["CALM", 0.6], "CALM": ["SHAKEN", 0.65], "SHAKEN": ["TILT", 0.55], "TILT": ["BREAKING", 0.35]
-    },
-
-    "HAND_LOST": {
-      "FLOW": ["HOT", 1.0], "HOT": ["CALM", 0.6]
-    },
-    "BIG_POT_LOST": {
-      "FLOW": ["HOT", 1.0], "HOT": ["SHAKEN", 0.7],
-      "CALM": ["SHAKEN", 0.55], "SHAKEN": ["TILT", 0.75], "TILT": ["BREAKING", 0.85]
-    },
-    "ALL_IN_LOST": {
-      "FLOW": ["HOT", 1.0], "HOT": ["SHAKEN", 1.0],
-      "CALM": ["SHAKEN", 0.8], "SHAKEN": ["TILT", 1.0], "TILT": ["BREAKING", 1.0]
-    },
-
-    "BIG_POT_WON": {
-      "HOT": ["FLOW", 0.7], "SHAKEN": ["CALM", 0.7], "TILT": ["SHAKEN", 0.65], "BREAKING": ["TILT", 0.5]
-    },
-    "ALL_IN_WON": {
-      "HOT": ["FLOW", 0.85], "SHAKEN": ["CALM", 0.85], "TILT": ["SHAKEN", 0.8], "BREAKING": ["TILT", 0.65]
-    },
-    "WIN_STREAK": {
-      "CALM": ["HOT", 0.85], "SHAKEN": ["HOT", 0.5], "TILT": ["SHAKEN", 0.35]
-    }
-  },
+  "bigPotLostRatio": 0.2,
+  "winQuipChance": 0.45,
 
   "rng": { "seed": null }
 }

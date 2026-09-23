@@ -66,14 +66,9 @@ const ROUTES = {
 
   'POST /api/read': () => battle.read(),
 
-  'POST /api/speak': async (req) => {
+  'POST /api/gotcha': async (req) => {
     const body = await readBody(req);
-    return battle.speak(String(body.skill ?? ''));
-  },
-
-  'POST /api/object': async (req) => {
-    const body = await readBody(req);
-    return battle.object(body.id);
+    return battle.gotcha(body.guess);
   },
 
   'POST /api/newgame': () => battle.newGame(),

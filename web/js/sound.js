@@ -176,4 +176,67 @@ export const sfx = {
     );
     tone({ freq: 261.6, dur: 1.2, type: 'triangle', gain: 0.05, delay: 1.36 });
   },
+
+  /* ================================================ v3 核心循环音效 */
+  /** READ 碎片闪现：两声轻灵的高频 blip（信息泄漏的一瞬）。 */
+  fragment() {
+    tone({ freq: 1046.5, dur: 0.06, type: 'sine', gain: 0.07 });
+    tone({ freq: 1396.9, dur: 0.07, type: 'sine', gain: 0.05, delay: 0.055 });
+    noise({ dur: 0.05, gain: 0.04, band: 4600 });
+    tone({ freq: 1567.98, dur: 0.05, type: 'triangle', gain: 0.035, delay: 0.11 });
+  },
+
+  /** CRACK：证据链成立 —— 玻璃碎裂感的重击。 */
+  crack() {
+    noise({ dur: 0.22, gain: 0.2, band: 2600 });
+    noise({ dur: 0.16, gain: 0.18, band: 760 });
+    tone({ freq: 190, dur: 0.2, type: 'square', gain: 0.14, sweep: -110 });
+    tone({ freq: 72, dur: 0.34, type: 'sine', gain: 0.2, sweep: -24 });
+    tone({ freq: 1568, dur: 0.1, type: 'triangle', gain: 0.07, delay: 0.04 });
+    tone({ freq: 2093, dur: 0.09, type: 'triangle', gain: 0.05, delay: 0.1 });
+  },
+
+  /** GOTCHA！押注判断出手 —— 上扬的喊声。 */
+  gotcha() {
+    tone({ freq: 220, dur: 0.2, type: 'sawtooth', gain: 0.13, sweep: 660 });
+    noise({ dur: 0.16, gain: 0.1, band: 1600 });
+    tone({ freq: 880, dur: 0.1, type: 'square', gain: 0.08, delay: 0.07 });
+    tone({ freq: 1174.7, dur: 0.14, type: 'square', gain: 0.06, delay: 0.15 });
+  },
+
+  /** EXECUTION：判断正确 —— 金色的凯旋琶音。 */
+  execution() {
+    [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) =>
+      tone({ freq: f, dur: 0.24, type: 'triangle', gain: 0.1, delay: i * 0.07 }),
+    );
+    tone({ freq: 130.8, dur: 0.7, type: 'sawtooth', gain: 0.05, delay: 0.1 });
+    noise({ dur: 0.2, gain: 0.05, band: 5200, delay: 0.28 });
+  },
+
+  /** COUNTER：判断错误 —— 下坠的警报。 */
+  counter() {
+    [880, 740, 622.5, 494].forEach((f, i) =>
+      tone({ freq: f, dur: 0.16, type: 'sawtooth', gain: 0.1, delay: i * 0.09 }),
+    );
+    noise({ dur: 0.3, gain: 0.1, band: 1200, delay: 0.12 });
+    tone({ freq: 98, dur: 0.5, type: 'sine', gain: 0.16, sweep: -30 });
+  },
+
+  /** BUSTED!：被他看穿 —— 失真警报 + 低频冲击。 */
+  busted() {
+    tone({ freq: 132, dur: 0.5, type: 'sawtooth', gain: 0.15, sweep: 90 });
+    tone({ freq: 1386, dur: 0.14, type: 'square', gain: 0.09 });
+    tone({ freq: 1318, dur: 0.14, type: 'square', gain: 0.08, delay: 0.16 });
+    noise({ dur: 0.4, gain: 0.14, band: 1400, delay: 0.05 });
+    tone({ freq: 55, dur: 0.6, type: 'sine', gain: 0.18, sweep: -18 });
+  },
+
+  /** BLIND UP：盲注升级横幅 —— 阶梯上行的号角。 */
+  blindup() {
+    tone({ freq: 523.25, dur: 0.12, type: 'triangle', gain: 0.1 });
+    tone({ freq: 659.25, dur: 0.12, type: 'triangle', gain: 0.1, delay: 0.11 });
+    tone({ freq: 783.99, dur: 0.12, type: 'triangle', gain: 0.1, delay: 0.22 });
+    tone({ freq: 1046.5, dur: 0.3, type: 'triangle', gain: 0.1, delay: 0.33 });
+    noise({ dur: 0.1, gain: 0.05, band: 3400, delay: 0.33 });
+  },
 };

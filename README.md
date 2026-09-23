@@ -1,29 +1,25 @@
-# ♠ allin · 1v1 德州扑克 Boss 战（最小原型）
+# ♠ ALL IN · 1v1 Poker Boss Battle（原型 v3）
 
-**RPG 提供牌桌层面的攻防意义，德州扑克提供心理层面的判断与博弈。**
-
-你不直接施放任何技能 —— 你通过扑克动作完成全部战斗：
+**玩家不是单纯依靠发牌获胜，而是通过读取并利用对手，让自己的判断转化为筹码优势。**
 
 ```
-打牌 → 观察行为 → 读心 → 判断意图 → 用言语影响对手心理
-→ 对手打法改变 → 利用变化继续打牌 → 赢走筹码
+打牌 → READ（心理碎片闪现）→ 证据链成立 → CRACK
+→ GOTCHA（押注你的判断：BLUFF / STRONG）
+   ├─ 判断正确 → EXECUTION：自由下注 + 高速连续 READ 的高压阶段
+   └─ 判断错误 → COUNTER：Boss 主动反扑的高压阶段
+→ 真实 Poker 结算 → 赢家筹码成长（Effective Stack ↑）→ 盲注升级推向决战
 ```
 
-双方各 1000 筹码。筹码同时是下注资源、生命值、战斗进度与风险资源：
-
-- **Boss 筹码归零** → `BREAK`，战斗胜利
-- **玩家筹码归零** → 战斗失败
-
-Boss **千面（🎭 欺骗型）** 全部使用脚本决策：高频率诈唬、用语言制造强势假象、
-害怕被认为胆小。他的心理是一条**六格双向情绪刻度**：
+**不对称开局**：你 500，Boss（千面 DECEIVER）5000 —— 1:10 的挑战者。
+筹码同时是**生命值、战斗资源与唯一成长资源**：
 
 ```
-✨神了 ← 🤑得意 ← 😏冷静 ⇒ 😳动摇 ⇒ 😡上头 ⇒ 🤯崩坏
- └ 正极端 ┘         └──── 负向轴（被你打击推进）────┘
+赢得筹码 → Effective Stack ↑ → 单手可形成的 Pot ↑ → 能造成的最大伤害 ↑
 ```
 
-你点破他 → 掉格；他赢大底池/连赢 → **回血爬正向轴**。状态变化会真实改变他的
-下注频率、注码尺度、弃牌阈值与言语抗性 —— 最后通过筹码结算你制造出的错误。
+**Boss 筹码归零 = BREAK 胜利**；你的筹码归零 = 失败。
+盲注按手数自动升级（10/20 → 160/320），战斗时间越长烈度越高，
+最终决战由你自己的成功自然推动产生。
 
 ```
 零 npm 依赖 · 无需构建 · node server/index.js 即可运行
@@ -46,76 +42,79 @@ npm run preview             # http://localhost:8791
 测试：
 
 ```bash
-npm test                    # 66 个测试
+npm test                    # 61 个测试
 ```
 
 ---
 
 ## 操作
 
-**首次进入会弹出 6 页新手引导**（目标 → 动作映射 → 瞄准 READ → 布局言语与贴纸 →
-看穿三拍 → 情绪刻度与循环），看过后用行动栏左下角的 **?** 随时重看；
-首手还会提示你先用一次 READ。
+**首次进入会弹出 6 页新手引导**（不对称挑战 → 简化操作 → READ 碎片 → CRACK →
+GOTCHA → 三阶段节奏），看过后用行动栏的 **?** 随时重看。
 
-| 扑克动作 | 战斗语义 |
+### 普通行动（系统自动算合法金额）
+
+| 按钮 | 含义 |
 | --- | --- |
-| Bet / Raise | 攻击、施压 |
-| Call | 防御、接招、抓诈唬 |
-| Check | 示弱、诱敌、等待反击 |
-| Fold | 撤退、止损 |
-| All-in | 必杀、高风险决战 |
+| **FOLD** | 撤退止损 |
+| **CALL / CHECK** | 接招 |
+| **PRESSURE** | 0.5×当前池 的下注/加注（金额服务端算好并显示） |
+| **HEAVY** | 1.0×当前池 的下注/加注 |
+| **ALL IN** | 必杀决战 |
 
-### 心理操作（每手各限次，UI 分组：瞄准 / 布局 / 清算）
+EXECUTION 阶段额外开放**自由滑杆**（任意 bet/raise 尺寸）。
 
-| 操作 | 什么时候用 | 效果 |
+### 心理操作
+
+| 按钮 | 什么时候 | 效果 |
 | --- | --- | --- |
-| **READ** ×2（瞄准） | 他刚下注、轮到你时按钮**呼吸发光** —— 此刻最有价值 | 一行模糊心理信息 + **倾向标签**（他想让你弃牌 / 欢迎你跟 / 等你犯错 / 自己也没底）+ 行动栏「你信吗？」——标签是判断轴不是答案 |
-| **挑衅** ×1（布局） | 想让他反抗（你有大牌想让他加注） | 他更凶、更大注；命中后挂 **🔥被激怒** 贴纸直到失效 |
-| **施压** ×1（布局） | 你准备诈唬时先压他 | 他更想退缩；挂 **⛓被压制** 贴纸 —— 下注时抬眼可见 |
-| **质疑** ×1（清算） | 只在「他的话有破绽」时亮起 | 追打已暴露但错过的破绽（= 看穿窗口的事后补刀） |
+| **READ** | 任何轮到你的时候，可**连续发动**（400ms 冷却） | 闪现一条 0.5–1.5s 的心理碎片：可能是**真话（TRUE）**、**噪音（NOISE）**、或者**他自己的错觉（DISTORTION）** —— 服务端不标类型，靠你和牌局实况交叉验证 |
+| **GOTCHA!** | 出现 **CRACK** 之后 | 押上你的判断：`BLUFF`（他认为你在诈唬/想让你弃）或 `STRONG`（他真有货/在设套）。对 → EXECUTION；错 → COUNTER |
 
-**看穿（破绽窗口）**：三拍 —— **①他下注（注码可见）②他说话（狠话可见）③两样对不上**
-→ 气泡与注码同时发亮、心跳响起，倒计时内按下「看穿！」→ Hitstop 打击演出 +
-**心理防线掉一格**（横幅会念出他接下来会怎么变）。窗口只在服务端判定为真矛盾时出现；
-首次出现有一次性教学定格。
+### 碎片 → CRACK → GOTCHA
 
-### 情绪刻度：每个状态都有刀有漏（两端除外）
+- 只有**真话**带语义标签（`wants_fold / weak_hand / strong_hand / trap / draw…`）
+- 自 Boss 上次进攻以来，累计的相关标签连成**证据链** → `CRACK!`（面板点亮证据）
+- **Critical Tell**：单条高强度真话直接成链（低概率高刺激）
+- GOTCHA 判定：`BLUFF ↔ intent∈{BLUFF,PROBE}`，`STRONG ↔ intent∈{VALUE,TRAP,CONTROL}`
+  —— 映射写在服务端，**Boss 的 intent 永不下发**
+- Boss 下一次进攻会作废旧证据与未使用的 CRACK：**机会只属于当下**
 
-| 状态 | 他的刀 | 他的漏 |
-| --- | --- | --- |
-| 😏 冷静 | 难读、台词克制 | 不送分 —— 想赢大池先把他搞出舒适区 |
-| 🤑 得意（赢出来的） | 输钱打击**有护甲**、**言语减半**、价值注更狠 | 会空城大注、敢 hero call |
-| 😳 动摇 | 更凶，你不能当他好欺负 | 漏话最多 → 看穿窗口变多、READ 更清晰 |
-| 😡 上头 | 暴力加注能吓走你 | 弃得少、爱接全下、乱炸 —— 教科书可剥削 |
-| 🤯 崩坏（负极端·**纯弊**） | —— | 信息全漏 + 随机乱打，全力收割 |
-| ✨ 神了（正极端·**纯利**） | **READ 雾化、言语免疫**、尺度精准 | 命短：输一手就掉档 —— **弃牌熬他** |
+### 情绪与 Boss 人格
 
-- 头像表情/配色/情绪刻度六格实时切换；台词池、READ 池、行为参数全部随状态切换
-- 赢钱回血事件：`BIG_POT_WON` / `ALL_IN_WON` / `WIN_STREAK`（连赢 → 得意 → 赢大底池 → 神了）
-- **赢牌后他会说臭屁话**；READ 在顺风/逆风会读到势头线（筹码流向是公开信息）
-- 归零时播放最终 Heart：*“我只是……不想承认你真的看穿我了。”* → **BREAK**
+- 三状态单向：**冷静 😏 → 动摇 😳 → 上头 😡**，由「被看穿」类事件推动
+  （被抓诈唬、GOTCHA 命中与连击、输掉大底池/全下）
+- 越失控越容易被读：碎片里真话变多、决策方差变大 —— 同时他嘴里的**错觉也变多**，
+  不再全是可靠信息
+- **DECEIVER 人格**：Bluff High / Aggression M-H / Trap High —— 喜欢制造强势假象、诱导你做判断
+- **Player Model + BUSTED!**：他会统计你的弃/跟/压力/READ 习惯；
+  把握度足够时宣告专属技 `我看穿你了 —— 全部下注！` 并进入 COUNTER 高压阶段
+  （Battle Log 里能看到，但模型本身绝不下发）
 
-键盘：`F` 弃牌 · `C` 过牌/跟注 · `R` 聚焦加注 · `A` 全下 · `Enter` 提交加注。
+HUD 必显：当前牌型、Pot、Call Cost、双方 Stack、**Effective Stack**、盲注级别与下次升级。
+
+键盘：`F` 弃牌 · `C` 过牌/跟注 · `A` 全下 · `↵` 提交加注（EXECUTION）。
 
 ---
 
 ## 数值调优
 
-**所有可调数值都在 `server/balance.json`**，改完点结局画面的「重新开始」
-（`/api/newgame` 会热加载配置）即生效，无需重启：
+**所有可调数值都在 `server/balance.json`**，改完点结局的「重新开始」
+（`/api/newgame` 会热加载配置）即生效：
 
 | 区块 | 内容 |
 | --- | --- |
-| `stacks` / `blinds` | 双方筹码 1000、盲注 5/10（100BB 深筹码，给翻后心理战留空间） |
-| `personality` | 行为基线：normalBetSize 0.7 池、bluffFrequency 20%、aggression… |
-| `mentalModifiers` | **六状态**在基线上的偏移：数值修正 + `speechScale`（得意 0.5 / 神了 0 免疫）+ `armor`（得意的输钱护甲）+ `readFog`（神了雾化）+ `hint`（刻度上的打法说明） |
-| `breakingModes` | 崩坏期三种失控模式的权重与幅度 |
-| `transitions` | 心理事件 → 状态转移表，**双向**：打击向下（`BLUFF_CAUGHT`、`CONTRADICTION_EXPOSED`…含从正轨打断），赢钱向上（`BIG_POT_WON`、`ALL_IN_WON`、`WIN_STREAK`、`HAND_LOST` 掉档）；看穿/言语永不回血 |
-| `speechEffects` | 三个言语技能的权重影响 × 各状态系数（最终 = 状态系数 × `speechScale`） |
-| `contradiction` | 注码分档、言行不一判定、行为矛盾超池阈值、破绽窗口时长 |
-| `read` / `speech` | 每手 READ 与言语次数 |
+| `stacks` | 不对称开局 500 / 5000（比例可调：1:8 / 1:10 / 1:15） |
+| `blindSchedule` | 盲注升级表（手数区间 → sb/bb） |
+| `read` | READ 冷却、各状态 TRUE/NOISE/DISTORTION 比例、闪现时长、Critical 概率 |
+| `cracks.rules` | 证据链规则（all-of 标签组合 → WEAKNESS / STRENGTH） |
+| `gotcha` / `counter` / `busted` | 连击阈值、COUNTER 增益、BUSTED 门槛与冷却 |
+| `personality` | DECEIVER 基线（bluff 0.35、aggression 0.65、trap 0.2…） |
+| `emotions` | 三状态在基线上的偏移 + 每格打法提示 |
+| `transitions` | 情绪事件表（单向、概率），结构有测试校验 |
+| `sizing` | 价值/诈唬线、注码抖动、PRESSURE/HEAVY 比例 |
 
-台词池在 `server/boss/talk.js`，READ 池在 `server/boss/reads.js`。
+台词池 `server/boss/talk.js`，碎片池 `server/boss/fragments.js`。
 
 ---
 
@@ -124,64 +123,56 @@ npm test                    # 66 个测试
 ```
 allin/
 ├── server/
-│   ├── index.js            HTTP：静态 + 6 个 API（无房间、无 LLM、无 SSE）
-│   ├── battle.js           战斗编排：手牌流转、台词/破绽/看穿、READ/言语、胜负心理事件、结算
+│   ├── index.js            HTTP：静态 + 5 个 API（无房间、无 LLM、无 SSE）
+│   ├── battle.js           战斗编排：盲注升级、预设行动、碎片/CRACK/GOTCHA、
+│   │                       EXECUTION/COUNTER、Player Model、BUSTED、结算
 │   ├── balance.json        ★ 全部可调数值
 │   ├── static.js           静态文件服务（含路径穿越防护）
 │   ├── engine/
-│   │   ├── cards.js        牌与洗牌
+│   │   ├── cards.js        牌与洗牌（注入随机源，可复现）
 │   │   ├── evaluator.js    5/6/7 张手牌评估
 │   │   └── duel.js         单挑无限注状态机（盲注/四街/最小加注/BB选项/
 │   │                       短筹码全下不重开/未跟注退还/自动runout/摊牌分池）
 │   └── boss/
-│       ├── boss.js         Boss 本体：状态、Buff、台词、READ、决策入口
-│       ├── ai.js           决策：蒙特卡洛胜率 + 权重 + 人格基线 + 状态修正
-│       ├── mental.js       六格情绪状态机（双向表驱动、护甲、躁动累积）
-│       ├── talk.js         台词池 + 行话选词（lineBias 主动制造矛盾）
-│       └── reads.js        READ 读心台词池
+│       ├── ai.js           三层决策管线：Poker Evaluation → Personality → Emotion
+│       ├── boss.js         Boss 本体：情绪、台词、COUNTER/BUSTED 增益、决策入口
+│       ├── mental.js       三状态情绪机（单向、事件表驱动）
+│       ├── fragments.js    READ 碎片池（TRUE 带标签 / NOISE / DISTORTION）
+│       ├── crack.js        证据链 → CRACK（含 Critical Tell）
+│       ├── playermodel.js  玩家行为模型（弃率/习惯/把握度 → BUSTED）
+│       └── talk.js         三状态台词池与赢牌台词
 ├── web/                    单屏牌桌：index.html + battle.css + app.js（事件队列/演出）
 ├── scripts/preview.mjs     独立 UI 预览服务器（canned 数据）
-├── docs/PROTOCOL.md        前后端契约（view / events / 演出要求）
-└── test/                   66 个测试
+├── docs/PROTOCOL.md        前后端契约（view / events / 碎片与 GOTCHA 语义 / 演出）
+└── test/                   61 个测试
 ```
 
 ---
 
-## 核心机制实现说明
+## 核心机制实现
 
-**决策系统**（`server/boss/ai.js`）
+**三层决策**（`server/boss/ai.js`）
 
 ```
-action = f(蒙特卡洛胜率, 底池赔率, 人格基线, MentalState 修正, 言语Buff, 随机权重)
-         → { action, amount, intent }    intent ∈ VALUE|BLUFF|PROBE|TRAP|POT_CONTROL
+Layer 1  Poker Evaluation：蒙特卡洛胜率 / 底池赔率 / Pot / Effective Stack / Street
+         → 中性权重 + 机会标记（valueOpp / bluffOpp）
+Layer 2  Personality：DECEIVER 压弃、抬加、开诈唬权重
+         + Player Model 适应（你 READ 后爱开大 → 他面对高压不再轻易弃）
+Layer 3  Emotion：三状态差值 + 方差；COUNTER/BUSTED 增益也从这层进
+Final    采样 + 定尺度 → { action, amount, intent }   intent ∈ VALUE|BLUFF|PROBE|TRAP|CONTROL
 ```
 
-`intent` 是内部剧本信息：用于选台词、生成 READ 提示、矛盾检测 —— **从不下发给客户端**。
+`intent` 是内部剧本信息：READ 碎片按它生成真话、GOTCHA 按它判对错 —— **绝不下发**。
 
-**两类矛盾**（`server/battle.js`）
+**信息隔离（测试钉死）**
 
-1. **言行不一**：台词的 claim（示弱/中性/放狠话）与实际注码档位（<0.35 / <0.55 / <0.95 / <1.5 / 超池）
-   明显不符。Boss 在 SHAKEN 之后 `lineBias` 提高 —— 他会越来越频繁地说一套下一套。
-2. **前后矛盾**：本手此前每一条街都在示弱，却在转牌/河牌突然超池开火。
+- `view.boss.hole` 恒为 null（摊牌只在 showdown 事件）
+- 永不下发：`deck`、`intent`、碎片的 `type/tags/strength`、Player Model、判定中间量
+- `readFragments` 每项只有 `{ text, atHand }`；GOTCHA 比对只在服务端
+- `test/battle.test.js` 逐字段扫描视图与事件
 
-检测到矛盾 → 播台词 → 开破绽窗口（三拍演出）。**看穿点击成功 = 窗口必然有效**
-（无效窗口根本不会开）；窗口过期后仍可用「质疑」追打这条矛盾。
-
-**心理事件 → 状态转移（双向拔河）**（`balance.json → transitions`）
-
-- 向下（打击）：`BLUFF_CAUGHT` / `PLAYER_BLUFF_SUCCESS` / `CONTRADICTION_EXPOSED` /
-  `LANGUAGE_WEAKNESS_HIT` / `BIG_POT_LOST` / `ALL_IN_LOST` / `CONSECUTIVE_READ_SUCCESS` /
-  `HAND_LOST`（顺风被打断）
-- 向上（回血）：`BIG_POT_WON` / `ALL_IN_WON` / `WIN_STREAK`（连赢爬正向轴）
-- 判定失败会累积「躁动」提高下一次成功率，连续打击终会见效；
-  **吃输钱护甲的只有输钱类事件 —— 被看穿的疼不被好运缓冲**
-
-**信息隔离**
-
-- `view` 里没有：Boss 底牌（摊牌事件除外）、牌堆、intent、claim、矛盾判定
-- 破绽窗口只含 `{id, deadline, line}`，真假由服务端点击时裁决
-- `READ lean` 是「他希望你出什么牌」的期望方向，不是牌力答案；神了时雾化为 null
-- 测试逐字段扫描视图与事件，钉死这条边界（`test/battle.test.js`）
+**盲注升级**：`blindSchedule` 按 `handNo` 分档，`hand_start` 带 `tier/blindUp`，
+升档时 feed 记 `BLIND UP`；Effective Stack 实时 = `min(双方)`。
 
 ---
 
@@ -189,15 +180,13 @@ action = f(蒙特卡洛胜率, 底池赔率, 人格基线, MentalState 修正, �
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/state` | `{ view }`（仅首次加载 / 静默刷新） |
-| POST | `/api/action` | `{action, amount?}` → `{view, events}` |
-| POST | `/api/read` | READ → `{view, events}` |
-| POST | `/api/speak` | `{skill: taunt\|challenge\|pressure}` → `{view, events}` |
-| POST | `/api/object` | `{id}` 看穿 → `{view, events, ok, reason?}` |
+| GET | `/api/state` | `{ view }`（首次加载 / 静默刷新） |
+| POST | `/api/action` | `{action, amount?}` → `{view, events}`；action ∈ fold/call/check/**pressure/heavy**/allin，bet/raise 仅 EXECUTION |
+| POST | `/api/read` | READ 碎片 → `{view, events}`（冷却内 400 `READ_COOLING`） |
+| POST | `/api/gotcha` | `{guess: "BLUFF"\|"STRONG"}` → `{view, events}` |
 | POST | `/api/newgame` | 重开一场（热加载 balance.json） |
 
-事件流（打字机台词、破绽窗口倒计时、打击演出、筹码飞行的播放顺序）见
-[docs/PROTOCOL.md](docs/PROTOCOL.md)。
+事件流与碎片/GOTCHA 完整语义见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
 ---
 
@@ -208,26 +197,27 @@ npm test
 ```
 
 - **引擎**（15）：盲注与行动顺序、BB 选项、最小加注、短筹码全下不重开、
-  未跟注退还、自动 runout、摊牌分池、非法动作拒绝、80 组种子 ×10 手模糊测试筹码守恒
-- **心理层**（24）：**双向转移表结构校验**（无自环/概率合法/关键边齐全/打击永不回血）、
-  回血事件与输钱护甲、状态级言语抗性（得意减半、神了免疫）、躁动累积、
-  注码分档与言行不一判定、lineBias 选词、台词/READ/言语池六状态完整、
-  READ 结构化（lean 合法 + 神了雾化）、**统计断言**（挑衅后 Raise↑、施压后 Fold↑、
-  TILT 比 CALM 更敢演注更大、TILT 更愿意接全下）
-- **战斗**（17）：视图隐私扫描、门禁与次数、看穿命中/过期/重复点击、质疑落空与命中、
-  有机矛盾必现、庄家轮换与自动下一手、事件契约校验、整场战斗（筹码守恒 + 终局 Heart + 重开）、
-  战败分支、心理事件通路烟测、**FLOW 雾化与言语免疫、READ 倾向标签、
-  视图新字段（stateHint/贴纸/canChallenge）、连赢计数与得意台词、心理事件方向与 hint**
+  未跟注退还、自动 runout、摊牌分池、非法动作拒绝、80 组种子模糊测试筹码守恒
 - **评估器/牌**（16）：9 种牌型、轮子顺子、踢脚比较、7 选 5、洗牌
+- **Boss 层**（17）：情绪表单向结构校验、概率 1/0、碎片比例（CALM 噪音多 / TILT 真话密集）、
+  只有 TRUE 带标签、intent 决定泄漏方向、Critical 与 EXECUTION 提速、证据链成/清/直爆、
+  三层权重方向（人格压弃抬加、TILT 更凶更敢接）、采样统计、全下抗性、
+  台词池完整、Player Model 习惯识别与把握度
+- **战斗层**（13）：隐私扫描（无 intent/tags/类型泄露）、500vs5000 与 Effective Stack、
+  盲注分档与升级事件、PRESSURE/HEAVY 金额、EXECUTION 门禁、READ 冷却与双发、
+  CRACK→GOTCHA 正确/错误/连击、旧 CRACK 过期、BUSTED、事件契约与筹码守恒、
+  Victory/Defeat 路径与重开恢复配置
+
+所有随机（含洗牌）走注入随机源，整场战斗完全可复现。
 
 ---
 
 ## 说明
 
-- 单进程单场战斗，状态在内存里，重启即清空；所有随机（含洗牌）走注入的随机源，测试完全可复现
-- 旧版本（多人 LLM 牌桌原型）已归档在分支 `archive/old-prototype`
+- 单进程单场战斗，状态在内存里，重启即清空
+- 旧版本已归档：v2 心理战原型在提交历史，多人 LLM 牌桌在分支 `archive/old-prototype`
 - 旧的 LLM 配置 `.data/config.json` 不再被读取，可自行删除
-- 想换端口：`PORT=9000 node server/index.js`；只绑本机：`HOST=127.0.0.1`
+- 换端口 `PORT=9000`；只绑本机 `HOST=127.0.0.1`
 
 ## License
 

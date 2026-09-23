@@ -1,13 +1,14 @@
 /**
- * Boss 本体：心理状态 + 台词 + READ + 决策的统一入口。
+ * Boss 本体（v3）：情绪 + 台词 + 决策入口 + 高压阶段增益。
  *
- * 持有的都是「剧本信息」：状态、言语 Buff、本手被点破的矛盾、最近一次行动的
- * intent。所有真正的筹码结算仍在牌桌上发生。
+ * 持有的是剧本信息：情绪状态、COUNTER/BUSTED 的本手增益、最近一次重要行动的 intent
+ * （GOTCHA 与证据链都锚定在它上面）。筹码结算永远在牌桌上发生。
+ *
+ * 证据链、碎片、Player Model 由 battle.js 持有（战斗层资源，按手/按局重置）。
  */
-import { Mental, FACES, MOODS, EVENT_NAMES } from './mental.js';
-import { decide, assembleMods, rollBreakingMode, monteCarloEquity } from './ai.js';
-import { pickLine, pickSpeechReact } from './talk.js';
-import { pickRead } from './reads.js';
+import { Emotion, FACES, MOODS, EVENT_NAMES, isDownEvent } from './mental.js';
+import { decide, assembleMods, monteCarloEquity } from './ai.js';
+import { pickLine, pickWinQuip } from './talk.js';
 
 export class Boss {
   /** @param {{ balance: object, rng?: () => number }} opts */
@@ -15,16 +16,14 @@ export class Boss {
     this.balance = balance;
     this.rng = rng;
     this.personality = balance.personality;
-    this.mental = new Mental({ transitions: balance.transitions, rng });
-    this.buffs = []; // 言语技能的持续效果
-    this.lastActionInfo = null; // { action, intent, street } —— READ 的 live 依据
-    this.exposedHand = false; // 本手被异议命中过：行为进一步偏移
-    this.contradictions = []; // 本手检测到的矛盾 { id, kind, resolved, ... }
-    this._seq = 0;
+    this.emotion = new Emotion({ transitions: balance.transitions, rng });
+    this.phaseBuff = null; // COUNTER / BUSTED：本手内的攻击增益（mods extra）
+    this.lastActionInfo = null; // { action, intent, street } —— GOTCHA 的判定锚点
+    this.lastEquity = null; // 最近一次决策的胜率（READ 碎片用，避免重算）
   }
 
   get state() {
-    return this.mental.state;
+    return this.emotion.state;
   }
 
   get face() {
@@ -35,72 +34,46 @@ export class Boss {
     return MOODS[this.state] ?? MOODS.CALM;
   }
 
-  get readClarity() {
-    return this.balance.mentalModifiers[this.state]?.readClarity ?? 0;
-  }
-
-  /** 当前状态的完整定义（修正、抗性、提示语都在里面）。 */
-  get stateDef() {
-    return this.balance.mentalModifiers[this.state] ?? this.balance.mentalModifiers.CALM ?? {};
-  }
-
-  /** 状态级行为提示（横幅 / 情绪刻度上的打法说明）。 */
   get stateHint() {
-    return this.stateDef.hint ?? null;
+    return this.balance.emotions?.[this.state]?.hint ?? null;
   }
 
-  /** 神了：READ 雾化。 */
-  get readFog() {
-    return Boolean(this.stateDef.readFog);
-  }
-
-  /** 神了：言语免疫（得意：减半由 speechScale 处理）。 */
-  get speechScale() {
-    const v = this.stateDef.speechScale;
-    return Number.isFinite(v) ? v : 1;
-  }
-
-  get speechImmune() {
-    return this.speechScale <= 0;
-  }
-
-  /** 每手开始：暴露偏移清零。矛盾跨手保留 —— 异议窗口可能还没过期。 */
+  /** 每手开始：本手增益与行动锚点清空。 */
   resetHand() {
     this.lastActionInfo = null;
-    this.exposedHand = false;
+    this.phaseBuff = null;
+    this.lastEquity = null;
   }
 
-  /** 当前生效的修正（含 BREAKING 失控模式 —— 每次决策重抽）。 */
+  setPhaseBuff(extra) {
+    this.phaseBuff = extra ?? null;
+  }
+
+  /** 当前生效修正：情绪差值（+ COUNTER/BUSTED 增益）。 */
   currentMods() {
-    const mods = assembleMods(this.balance, this.state, {
-      buffs: this.buffs,
-      exposed: this.exposedHand,
-    });
-    if (this.state === 'BREAKING') {
-      const mode = rollBreakingMode(this.balance, this.rng);
-      for (const [k, v] of Object.entries(mode)) {
-        if (k === 'weight') continue;
-        mods[k] = (mods[k] ?? 0) + v;
-      }
-      mods.breakingMode = mode;
-    }
-    return mods;
+    return assembleMods(this.balance, this.state, { extra: this.phaseBuff });
   }
 
   /**
-   * 做一次决策。调用方负责把它交给引擎执行。
-   * @returns {{ action, amount?, intent, equity, mods }}
+   * 三层管线决策（见 ai.js）。
+   * @returns {{ action, amount?, intent, equity }}
    */
   decide(ctx) {
     const mods = this.currentMods();
-    const result = decide({ ...ctx, mods, personality: this.personality, sizing: this.balance.sizing, rng: this.rng });
-    // 言语 Buff 按「Boss 的决策次数」衰减
-    this.buffs = this.buffs.map((b) => ({ ...b, decisions: b.decisions - 1 })).filter((b) => b.decisions > 0);
+    const result = decide({
+      ...ctx,
+      mods,
+      personality: this.personality,
+      sizing: this.balance.sizing,
+      model: ctx.model ?? null,
+      rng: this.rng,
+    });
+    this.lastEquity = result.equity;
     result.mods = mods;
     return result;
   }
 
-  /** 记录本手/本街的行动信息，供 READ 与矛盾检测使用。 */
+  /** 记录重要行动（GOTCHA/证据链的锚点）。 */
   noteAction({ action, intent, street }) {
     this.lastActionInfo = { action, intent, street };
   }
@@ -108,120 +81,45 @@ export class Boss {
   // ---------------------------------------------------------------- 台词
 
   /**
-   * 这次行动要不要配一句台词？重要动作（下注/加注/全下）永远说。
-   * @returns {{ text: string, claim: number } | null}
+   * 这次行动配不配台词？重要动作（下注/加注/全下）永远说。
+   * @returns {{ text: string, street: string } | null}
    */
-  talkFor({ action, intent, potBefore, put, street }) {
-    // 下注/加注/全下永远说话；过牌/跟注按状态话痨度随机；弃牌安静
-    const isAggressive = action === 'bet' || action === 'raise' || action === 'allin';
+  talkFor({ action, street }) {
+    const isAggressive = action === 'bet' || action === 'raise' || action === 'allin'
+      || action === 'pressure' || action === 'heavy';
     if (!isAggressive) {
       if (action === 'fold') return null;
-      const talkative = {
-        CALM: 0.18, SHAKEN: 0.3, TILT: 0.42, BREAKING: 0.55, HOT: 0.45, FLOW: 0.12,
-      }[this.state] ?? 0.2;
+      const talkative = { CALM: 0.18, SHAKEN: 0.3, TILT: 0.42 }[this.state] ?? 0.2;
       if (this.rng() > talkative) return null;
     }
-    const mods = this.currentMods();
-    const line = pickLine({
-      state: this.state,
-      intent,
-      action,
-      potBefore,
-      put,
-      lineBias: mods.lineBias ?? 0.2,
-      rng: this.rng,
-      sizeLevels: this.balance.contradiction?.sizeLevels ?? [0.35, 0.55, 0.95, 1.5],
-    });
-    return { ...line, street };
+    const intent = this.lastActionInfo?.intent ?? null;
+    const text = pickLine({ state: this.state, intent, rng: this.rng });
+    return { text, street };
   }
 
-  // ---------------------------------------------------------------- READ
-
-  /**
-   * 一条 READ：模糊信息 + 期望方向（lean 是判断轴，不是答案）。
-   * @returns {{text: string, lean: string|null, leanLabel: string|null}}
-   */
-  read({ street, momentum = 0 }) {
-    const live = this.liveIntent(street);
-    const situation = !live ? 'neutral'
-      : live.action === 'check' || live.action === 'call' ? 'checked'
-      : 'bet';
-    return pickRead({
-      state: this.state,
-      clarity: this.readClarity,
-      situation,
-      intent: live?.intent ?? null,
-      momentum,
-      rng: this.rng,
-    });
-  }
-
-  /** live intent（本街有效）给 READ 判断当前下注用。 */
-  liveIntent(street) {
-    if (!this.lastActionInfo) return null;
-    if (this.lastActionInfo.street !== street) return null;
-    return this.lastActionInfo;
-  }
-
-  // ---------------------------------------------------------------- 言语
-
-  /**
-   * 被玩家言语攻击后的回应。
-   * @param {'taunt'|'challenge'|'pressure'} skill
-   * @param {'hit'|'resist'|'whiff'} result
-   */
-  react(skill, result) {
-    return pickSpeechReact(skill, this.state, result, this.rng);
-  }
-
-  /** 挂一个言语 Buff，影响接下来若干次决策。 */
-  applySpeechBuff(skill) {
-    const n = this.balance.speech?.buffDecisions ?? 2;
-    this.buffs.push({ skill, decisions: n });
-    if (skill === 'taunt') {
-      // 被激将会积一点躁动，提高下一次状态转移的把握
-      this.mental.debt = Math.min(0.5, this.mental.debt + 0.1);
-    }
+  /** 赢下一手之后的台词（有概率沉默）。 */
+  winQuip() {
+    return pickWinQuip(this.state, this.balance.winQuipChance ?? 0.45, this.rng);
   }
 
   // ---------------------------------------------------------------- 心理
 
   /**
-   * 一次心理事件判定（含当前状态对该事件的抗性）。
-   * @returns {{from,to,cause,causeName,hint}|null}
+   * 一次情绪事件（只升不降）。
+   * @returns {{from,to,cause,causeName,hint,down}|null}
    */
-  mentalEvent(name, armor = 1) {
-    const t = this.mental.attempt(name, armor);
-    if (t) {
-      t.causeName = EVENT_NAMES[name] ?? name;
-      t.hint = this.balance.mentalModifiers?.[t.to]?.hint ?? null;
-    }
+  mentalEvent(name) {
+    const t = this.emotion.attempt(name);
+    if (!t) return null;
+    t.causeName = EVENT_NAMES[name] ?? name;
+    t.hint = this.balance.emotions?.[t.to]?.hint ?? null;
+    t.down = isDownEvent(t.from, t.to);
     return t;
   }
 
-  /** 记录一个矛盾（异议窗口用）。只清已经处理掉的旧记录。 */
-  addContradiction({ kind, handNo, detail }) {
-    const item = { id: ++this._seq, kind, handNo, resolved: false, detail, at: Date.now() };
-    this.contradictions.push(item);
-    // 上限保护：优先丢弃已处理的最旧一条，绝不丢还没处理的
-    if (this.contradictions.length > 12) {
-      const done = this.contradictions.findIndex((c) => c.resolved);
-      this.contradictions.splice(done === -1 ? 0 : done, 1);
-    }
-    return item;
-  }
-
-  findContradiction(id) {
-    if (id === undefined || id === null) return null;
-    return this.contradictions.find((c) => c.id === Number(id)) ?? null;
-  }
-
-  unresolvedContradiction() {
-    return this.contradictions.find((c) => !c.resolved) ?? null;
-  }
-
-  markExposed() {
-    this.exposedHand = true;
+  /** 最近一次重要行动的 intent（GOTCHA 判定用）。 */
+  currentIntent() {
+    return this.lastActionInfo?.intent ?? null;
   }
 }
 
