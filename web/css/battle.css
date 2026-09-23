@@ -1,7 +1,9 @@
 /* =========================================================================
-   battle.css — 《allin》单屏 Boss 战 v3：布局 + HUD + 筹码堆 + 演出
+   battle.css — 《allin》单屏 Boss 战 v4：布局 + HUD + 筹码堆 + 演出
    依赖 tokens.css（设计变量）与 cards.css（牌面）。
-   v3 已删除：异议窗口 / 言语贴纸 / 六格情绪刻度 / READ 结果旧盒 等死代码。
+   v4 已删除：自由加注滑杆 / GOTCHA 二选一确认条 / 旧模式配色 等死代码；
+   v4 新增：Known PIN 卡、碎片行 PIN 按钮、批量闪现（错开+泄漏金描边）、
+            GOTCHA 红金警戒态、阶梯 RAISE 按钮、负债红色数字。
    ========================================================================= */
 
 /* hidden 属性必须赢过任何 display:flex/grid 的组件样式 */
@@ -212,7 +214,7 @@
   }
 }
 
-/* READ 碎片闪现浮层：Boss 区闪现一行，flashMs 后自行淡出（不阻塞队列） */
+/* READ 批量碎片闪现浮层：成组 stacked、逐行错开，flashMs 后自行淡出（不阻塞队列） */
 .fragflash {
   position: relative;
   min-height: 0;
@@ -224,23 +226,77 @@
 
 .fragflash__line {
   max-width: 100%;
-  padding: 8px 15px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
   border-radius: 10px;
-  font-size: 14.5px;
+  font-size: 14px;
   line-height: 1.5;
   color: #e2f0ff;
   background: rgba(90, 169, 255, 0.13);
   border: 1px solid rgba(90, 169, 255, 0.55);
   box-shadow: 0 0 20px rgba(90, 169, 255, 0.3);
-  animation: fragIn 0.3s var(--ease-out);
+  animation: fragIn 0.3s var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 110ms); /* 逐行错开进入 */
 }
 
-.fragflash__line.is-exec {
+.fragflash__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* GOTCHA 心理泄漏：金色描边 + 更快更密（id=null 不可 PIN） */
+.fragflash__line.is-leak {
   color: #fff3d2;
   background: rgba(232, 200, 106, 0.14);
   border-color: rgba(232, 200, 106, 0.7);
   box-shadow: 0 0 22px rgba(232, 200, 106, 0.45);
-  animation-duration: 0.2s;
+}
+
+.fragflash__depth {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  color: #2a1e05;
+  background: linear-gradient(180deg, var(--gold), var(--gold-2));
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+
+/* 闪现行上的 PIN 按钮（仅本手工 READ 的行出现） */
+.fragflash__pin,
+.frow__pin {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.07);
+  opacity: 0.75;
+  transition: all 0.15s var(--ease);
+}
+
+.fragflash__pin:hover,
+.frow__pin:hover {
+  opacity: 1;
+  border-color: var(--gold);
+  background: rgba(232, 200, 106, 0.18);
+}
+
+.frow__pin.is-on {
+  opacity: 1;
+  border-color: var(--gold);
+  background: rgba(232, 200, 106, 0.22);
+  box-shadow: 0 0 8px rgba(232, 200, 106, 0.4);
 }
 
 .fragflash__line.is-out {
@@ -300,11 +356,23 @@
   line-height: 1;
   color: var(--gold);
   text-shadow: 0 2px 10px rgba(232, 200, 106, 0.25);
+  transition: color 0.25s var(--ease);
+}
+
+/* 负债：数字变红（筹码条由 JS 回缩到 0） */
+.stackbar__num.is-debt {
+  color: #ff5d75;
+  text-shadow: 0 0 12px rgba(216, 69, 90, 0.55);
 }
 
 .stackbar--boss .stackbar__num {
   color: #ff9aa8;
   text-shadow: 0 2px 10px rgba(216, 69, 90, 0.3);
+}
+
+.stackbar--boss .stackbar__num.is-debt {
+  color: #ff5d75;
+  font-weight: 900;
 }
 
 .stackbar__track {
@@ -421,18 +489,23 @@
   transition: all 0.3s var(--ease);
 }
 
-.hud__mode[data-mode="EXECUTION"] {
-  color: #2a1e05;
-  background: linear-gradient(180deg, var(--gold), var(--gold-2));
-  border-color: rgba(0, 0, 0, 0.3);
-  box-shadow: 0 0 18px rgba(232, 200, 106, 0.55);
+.hud__mode[data-mode="GOTCHA"] {
+  color: #fff;
+  background:
+    repeating-linear-gradient(135deg, rgba(42, 30, 5, 0.35) 0 6px, transparent 6px 12px),
+    linear-gradient(180deg, var(--gold), var(--red-deep));
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 0 18px rgba(216, 69, 90, 0.6), 0 0 10px rgba(232, 200, 106, 0.5);
+  animation: gotchaWarn 1.1s var(--ease) infinite alternate;
 }
 
-.hud__mode[data-mode="COUNTER"] {
-  color: #fff;
-  background: linear-gradient(180deg, #ff4d6a, var(--red-deep));
-  border-color: rgba(255, 255, 255, 0.35);
-  box-shadow: 0 0 18px rgba(216, 69, 90, 0.55);
+@keyframes gotchaWarn {
+  from {
+    box-shadow: 0 0 10px rgba(216, 69, 90, 0.4), 0 0 6px rgba(232, 200, 106, 0.4);
+  }
+  to {
+    box-shadow: 0 0 24px rgba(216, 69, 90, 0.8), 0 0 14px rgba(232, 200, 106, 0.7);
+  }
 }
 
 /* Boss 三状态情绪：冷静😏 / 动摇😳 / 上头😡 */
@@ -798,9 +871,70 @@
   flex: 0 0 auto;
 }
 
-/* READ Fragments 行（纯文本，最新在上） */
+/* Known 📌：唯一 PIN 槽卡片（READ Fragments 顶部） */
+.known {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 6px 8px 2px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(232, 200, 106, 0.45);
+  background: linear-gradient(180deg, rgba(232, 200, 106, 0.14), rgba(232, 200, 106, 0.06));
+  box-shadow: 0 0 14px rgba(232, 200, 106, 0.14);
+  min-width: 0;
+}
+
+.known.is-empty {
+  border-style: dashed;
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: none;
+}
+
+.known__tag {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+}
+
+.known.is-empty .known__tag {
+  color: var(--text-3);
+}
+
+.known__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-0);
+}
+
+.known.is-empty .known__text {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.known__check {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 900;
+  color: var(--green);
+  text-shadow: 0 0 10px rgba(75, 208, 138, 0.55);
+  animation: popIn 0.24s var(--ease-out);
+}
+
+/* READ Fragments 行（纯文本，最新在上；带 PIN 按钮） */
 .frow {
-  padding: 5px 9px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px 5px 9px;
   border-left: 2px solid rgba(90, 169, 255, 0.55);
   background: rgba(90, 169, 255, 0.07);
   border-radius: 6px;
@@ -810,7 +944,34 @@
   animation: riseIn 0.25s var(--ease-out);
 }
 
-/* CRACK Feedback 行：kind + 证据标签胶囊 + strength 点数 + gotcha 结果 */
+.frow__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frow.is-pinned {
+  border-left-color: var(--gold);
+  background: rgba(232, 200, 106, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(232, 200, 106, 0.35);
+}
+
+.frow.is-pinned .frow__text {
+  color: var(--text-0);
+}
+
+.frow.is-verified {
+  background: rgba(75, 208, 138, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(75, 208, 138, 0.4);
+}
+
+.frow.is-verified .frow__text {
+  color: #b9ffd8;
+}
+
+/* CRACK Feedback 行：kind + 触发行动 + evidence 标签胶囊 + strength 点数 */
 .crow {
   display: flex;
   flex-direction: column;
@@ -858,6 +1019,16 @@
   box-shadow: 0 0 12px rgba(232, 200, 106, 0.55);
 }
 
+.crow__action {
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  padding: 1.5px 6px;
+  border-radius: 5px;
+  color: #0e1412;
+  background: linear-gradient(180deg, var(--gold), var(--gold-2));
+}
+
 .crow__str {
   font-size: 10px;
   letter-spacing: 2px;
@@ -900,20 +1071,6 @@
   background: rgba(255, 255, 255, 0.07);
   border: 1px solid var(--line-strong);
   color: var(--text-1);
-}
-
-.crow__res {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-}
-
-.crow__res.is-right {
-  color: var(--green);
-}
-
-.crow__res.is-wrong {
-  color: #ff97a5;
 }
 
 /* Battle Log 行 */
@@ -995,6 +1152,14 @@
   color: var(--green);
 }
 
+.irow--pin {
+  border-left-color: var(--gold);
+}
+
+.irow--pin .irow__kind {
+  color: var(--gold);
+}
+
 /* ============================================================== 行动栏 */
 .actionbar {
   display: flex;
@@ -1008,15 +1173,30 @@
   transition: border-color 0.4s var(--ease), box-shadow 0.4s var(--ease);
 }
 
-/* 模式联动：EXECUTION 金边 / COUNTER 红边 */
-.app[data-mode="EXECUTION"] .actionbar {
-  border-top-color: rgba(232, 200, 106, 0.65);
-  box-shadow: 0 -12px 34px rgba(232, 200, 106, 0.16);
+/* 模式联动：GOTCHA 红金警戒边（全屏宣告后整条行动栏进入警戒态） */
+.app[data-mode="GOTCHA"] .actionbar {
+  border-top-color: rgba(255, 90, 110, 0.85);
+  box-shadow:
+    0 -12px 34px rgba(216, 69, 90, 0.28),
+    inset 0 1px 0 rgba(232, 200, 106, 0.5);
+  background: linear-gradient(180deg, rgba(38, 18, 20, 0.97), rgba(12, 7, 7, 0.99));
 }
 
-.app[data-mode="COUNTER"] .actionbar {
-  border-top-color: rgba(216, 69, 90, 0.7);
-  box-shadow: 0 -12px 34px rgba(216, 69, 90, 0.2);
+.app[data-mode="GOTCHA"]::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 55;
+  border: 3px solid transparent;
+  border-image: repeating-linear-gradient(45deg, rgba(216, 69, 90, 0.75) 0 18px, rgba(232, 200, 106, 0.75) 18px 36px) 3;
+  animation: gotchaEdge 1.2s steps(2) infinite;
+}
+
+@keyframes gotchaEdge {
+  50% {
+    opacity: 0.55;
+  }
 }
 
 .ab__status {
@@ -1155,104 +1335,31 @@ kbd {
   color: #ffd0d8;
 }
 
-/* EXECUTION 自由加注控件 */
-.raise {
-  flex: 1 1 280px;
-  min-width: 236px;
-  max-width: 420px;
-  display: flex;
+/* GOTCHA 阶梯 RAISE 按钮：金额全在服务端（至 N），无任何数字输入 */
+.btn--ladder {
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: var(--radius);
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--line);
-  transition: border-color 0.2s var(--ease), opacity 0.2s var(--ease);
-}
-
-.raise.is-locked {
-  opacity: 0.45;
-  pointer-events: none;
-}
-
-.raise.is-armed {
-  border-color: rgba(232, 200, 106, 0.6);
-  box-shadow: 0 0 16px rgba(232, 200, 106, 0.18);
-}
-
-.raise__top {
-  display: flex;
+  gap: 1px;
   align-items: center;
-  gap: 10px;
-}
-
-.raise__label {
-  font-size: 11px;
-  color: var(--text-2);
-  letter-spacing: 0.1em;
-  flex: 0 0 auto;
-}
-
-.raise__slider {
-  flex: 1;
-  -webkit-appearance: none;
-  appearance: none;
-  height: 6px;
-  border-radius: 99px;
-  background: linear-gradient(90deg, var(--gold-2) var(--fill, 0%), rgba(255, 255, 255, 0.12) var(--fill, 0%));
-  outline: none;
-  cursor: pointer;
-}
-
-.raise__slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #f7e6ae, var(--gold-2));
-  border: 2px solid #2a1e05;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
-  cursor: grab;
-}
-
-.raise__slider::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--gold);
-  border: 2px solid #2a1e05;
-  cursor: grab;
-}
-
-.raise__amt {
-  flex: 0 0 auto;
-  min-width: 64px;
-  text-align: right;
-  font-size: 19px;
-  font-weight: 800;
-  color: var(--gold);
-}
-
-.raise__quick {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.btn--chip {
-  padding: 4px 9px;
-  font-size: 11px;
-  border-radius: 7px;
-}
-
-.raise__quick #btn-raise {
-  margin-left: auto;
   padding: 7px 14px;
-  font-size: 13px;
+  min-width: 128px;
+  line-height: 1.2;
+  border-color: rgba(232, 200, 106, 0.6);
+  color: var(--gold);
+  background: linear-gradient(180deg, rgba(232, 200, 106, 0.2), rgba(216, 69, 90, 0.12));
 }
 
-/* 特殊操作区：READ（冷却转圈） + GOTCHA!（二选一确认） */
+.btn--ladder:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(232, 200, 106, 0.34), rgba(216, 69, 90, 0.2));
+  border-color: var(--gold);
+  box-shadow: 0 0 16px rgba(232, 200, 106, 0.35);
+}
+
+.btn--ladder .ab__btn-sub b {
+  color: var(--gold);
+  font-size: 12px;
+}
+
+/* 特殊操作区：READ（限量 + 冷却转圈） + GOTCHA!（解锁点亮 / 进行中常亮） */
 .ab__special {
   position: relative;
   flex: 0 0 auto;
@@ -1349,11 +1456,28 @@ kbd {
   animation: readGlow 1.9s ease-in-out infinite;
 }
 
-/* GOTCHA! */
-.gotcha {
-  position: relative;
+/* READ 次数耗尽 / 冷却中：灰态（GOTCHA 中显示 —— 同样灰掉） */
+.mental--read.is-empty,
+.mental--read.is-cd {
+  filter: grayscale(0.7);
+  opacity: 0.7;
 }
 
+.mental--read.is-empty .read-ring {
+  background: conic-gradient(var(--text-3) var(--cd, 360deg), rgba(255, 255, 255, 0.07) 0);
+}
+
+.mental--read.is-empty .read-ring__core {
+  border-color: var(--line-strong);
+  color: var(--text-3);
+}
+
+.mental--read.is-empty .read-cd {
+  color: var(--red);
+  font-weight: 800;
+}
+
+/* GOTCHA!：解锁点亮（脉冲） / 负债进行中（常亮不闪） */
 .gotcha__btn {
   padding: 11px 18px;
   font-size: 15px;
@@ -1380,71 +1504,15 @@ kbd {
   }
 }
 
-.gotcha__confirm {
-  position: absolute;
-  bottom: calc(100% + 10px);
-  right: 0;
-  display: flex;
-  align-items: stretch;
-  gap: 7px;
-  padding: 9px;
-  border-radius: 14px;
-  background: rgba(9, 13, 11, 0.97);
-  border: 1px solid var(--gold-dim);
-  box-shadow: var(--shadow-2), 0 0 30px rgba(232, 200, 106, 0.14);
-  z-index: 40;
-  animation: popIn 0.18s var(--ease-out);
-}
-
-.gotcha__guess {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: center;
-  padding: 9px 16px;
-  font-size: 15px;
-  font-weight: 900;
-  letter-spacing: 0.1em;
-  border: 1px solid;
-}
-
-.gotcha__guess small {
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  opacity: 0.8;
-}
-
-.gotcha__guess--bluff {
-  color: #8df0bb;
-  border-color: rgba(75, 208, 138, 0.55);
-  background: rgba(75, 208, 138, 0.1);
-}
-
-.gotcha__guess--bluff:hover:not(:disabled) {
-  background: rgba(75, 208, 138, 0.22);
-  box-shadow: 0 0 16px rgba(75, 208, 138, 0.35);
-}
-
-.gotcha__guess--strong {
-  color: #ffd9a0;
-  border-color: rgba(240, 178, 74, 0.55);
-  background: rgba(240, 178, 74, 0.1);
-}
-
-.gotcha__guess--strong:hover:not(:disabled) {
-  background: rgba(240, 178, 74, 0.22);
-  box-shadow: 0 0 16px rgba(240, 178, 74, 0.35);
-}
-
-.gotcha__cancel {
-  padding: 8px 11px;
-  color: var(--text-3);
-  font-size: 13px;
-}
-
-.gotcha__cancel:hover {
-  color: var(--text-0);
+.gotcha__btn.is-progress {
+  animation: none;
+  color: #fff;
+  letter-spacing: 0.14em;
+  border-color: rgba(232, 200, 106, 0.75);
+  background:
+    repeating-linear-gradient(135deg, rgba(42, 30, 5, 0.4) 0 7px, transparent 7px 14px),
+    linear-gradient(180deg, rgba(216, 69, 90, 0.55), rgba(200, 16, 46, 0.42));
+  box-shadow: 0 0 18px rgba(232, 200, 106, 0.4), 0 0 26px rgba(216, 69, 90, 0.4);
 }
 
 /* ================================================================ 演出层 */

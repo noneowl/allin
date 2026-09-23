@@ -424,6 +424,7 @@ export class Battle {
     const count = range.min + Math.floor(this.rng() * (hi - range.min + 1));
     const state = this.boss.state;
     const fragments = [];
+    const entries = [];
     for (let i = 0; i < count; i++) {
       const frag = makeFragment({
         state,
@@ -436,8 +437,10 @@ export class Battle {
       });
       fragments.push({ id: null, text: frag.text }); // 自动泄漏不可 PIN
       // type 仅供服务端/测试查验；view 侧显式映射会剥掉它
-      this.readFragments.unshift({ id: null, text: frag.text, atHand: this.handNo, type: frag.type });
+      entries.push({ id: null, text: frag.text, atHand: this.handNo, type: frag.type });
     }
+    // 整批保序插到最前
+    this.readFragments.unshift(...entries);
     if (this.readFragments.length > 30) this.readFragments.length = 30;
     events.push({
       type: 'read_batch',
@@ -581,6 +584,7 @@ export class Battle {
     const count = range.min + Math.floor(this.rng() * (hi - range.min + 1));
 
     const fragments = [];
+    const entries = [];
     for (let i = 0; i < count; i++) {
       const frag = makeFragment({
         state,
@@ -601,9 +605,11 @@ export class Battle {
         handId: this.handNo,
       });
       fragments.push({ id, text: frag.text });
-      this.readFragments.unshift({ id, text: frag.text, atHand: this.handNo });
+      entries.push({ id, text: frag.text, atHand: this.handNo });
       this.#feed('read', frag.text);
     }
+    // 整批按序插到面板最前（f0 在最上）：与闪现堆叠顺序一致
+    this.readFragments.unshift(...entries);
     if (this.readFragments.length > 30) this.readFragments.length = 30;
 
     this.readsLeft -= 1;

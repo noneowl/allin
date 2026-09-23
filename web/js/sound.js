@@ -204,7 +204,7 @@ export const sfx = {
     tone({ freq: 1174.7, dur: 0.14, type: 'square', gain: 0.06, delay: 0.15 });
   },
 
-  /** EXECUTION：判断正确 —— 金色的凯旋琶音。 */
+  /** 凯旋琶音（达成重大节点时的金色奖励音）。 */
   execution() {
     [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) =>
       tone({ freq: f, dur: 0.24, type: 'triangle', gain: 0.1, delay: i * 0.07 }),
@@ -213,7 +213,7 @@ export const sfx = {
     noise({ dur: 0.2, gain: 0.05, band: 5200, delay: 0.28 });
   },
 
-  /** COUNTER：判断错误 —— 下坠的警报。 */
+  /** 下坠警报（高压反扑场景的警示音）。 */
   counter() {
     [880, 740, 622.5, 494].forEach((f, i) =>
       tone({ freq: f, dur: 0.16, type: 'sawtooth', gain: 0.1, delay: i * 0.09 }),

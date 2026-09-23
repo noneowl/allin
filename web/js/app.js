@@ -1,19 +1,21 @@
 /**
- * app.js — 《allin》Boss 战前端主逻辑（v3）
+ * app.js — 《allin》Boss 战前端主逻辑（v4）
  *
- * 结构：状态机（S）+ 串行事件队列（pump）+ 全量渲染（render）+ 交互。
- * 契约：docs/PROTOCOL.md（v3）—— 每个 POST 返回 { view, events }；
+ * 结构：状态机（S）+ 串行事件队列（pump）+ 全量渲染（render）+ 交互。（沿用 v3 骨架）
+ * 契约：docs/PROTOCOL.md（v4）—— 每个 POST 返回 { view, events }；
  * view 是权威快照（播完事件后整体渲染），events 串行按节奏播放，播放期间锁定行动栏。
  *
- * v3 核心循环：打牌 → READ 碎片 → 证据链 → CRACK → GOTCHA（BLUFF/STRONG）
- *   → 对 = EXECUTION（自由滑杆 + 高速 READ）/ 错 = COUNTER（Boss 反扑）→ 真实筹码结算。
+ * v4 核心循环：Boss 行动 → READ（每手限量 2 次，一次返回一组 3–5 条碎片）
+ *   → PIN 一条真话进 Known（单槽）→ 正确的牌桌行动 → 验证成 CRACK（情报 × 行动）
+ *   → 攒够 N 个 CRACK → GOTCHA（负债决胜：解除上限、阶梯 RAISE、心理泄漏）
+ *   → FOLD / 摊牌统一结算 → 判定胜负 / 下一手（绝不负数进下一手）。
  *
  * 防御性原则：
- * - 任何字段缺失都不崩（blind/gotcha/cracks/readFragments/legal 缺失 → 默认值）；
+ * - 任何字段缺失都不崩（blind/gotcha/cracks/pin/readFragments/readsLeft/legal 缺失 → 默认值）；
  * - 事件播放单条 try/catch，异常路径最终一定解锁行动栏（pump 的 finally + syncLock）；
+ * - read_batch 成组闪现 fire-and-forget，绝不阻塞事件队列；
  * - render 子步骤逐个 try/catch，一个面板炸了不影响其它面板；
- * - view 响应做 JSON 深拷贝，避免与事件播放中的可变状态共享引用；
- * - read_fragment 闪现 fire-and-forget，绝不阻塞事件队列。
+ * - view 响应做 JSON 深拷贝；chips 可为负（负债）→ 筹码堆回缩 0 + 红色欠额。
  */
 import { $, el, clear } from './dom.js';
 import { CardRow } from './cards.js';
@@ -33,26 +35,27 @@ const ACTION_LABEL = {
 };
 const CRACK_KIND_LABEL = { WEAKNESS: '弱点链', STRENGTH: '强牌链', CRITICAL: '致命破绽' };
 const EVIDENCE_LABEL = {
-  wants_fold: '想让你弃', fear_call: '怕你跟', weak_hand: '牌弱', strong_hand: '牌强',
-  draw: '在听牌', missed_board: '错过牌面', trap: '在设套', overconfidence: '过度自信',
+  wants_fold: '想让你弃', fear_call: '怕你跟', fear_raise: '怕你加注', weak_hand: '牌弱',
+  strong_hand: '牌强', draw: '在听牌', missed_board: '错过牌面', trap: '在设套',
+  call_welcome: '欢迎你跟', board_lock: '牌面锁定', overconfidence: '过度自信',
 };
 const FEED_LABEL = {
-  talk: '台词', read: 'READ', crack: 'CRACK', gotcha: 'GOTCHA', mode: '模式',
+  talk: '台词', read: 'READ', pin: 'PIN', crack: 'CRACK', gotcha: 'GOTCHA', mode: '模式',
   blind: '盲注', hand: '结算', model: '针对', system: '系统', mental: '情绪',
 };
-const MODE_LABEL = { NORMAL: 'NORMAL', EXECUTION: 'EXECUTION', COUNTER: 'COUNTER' };
-const MODE_HINT = { NORMAL: '正常对抗', EXECUTION: '自由下注 · 高速 READ', COUNTER: 'Boss 反扑中' };
+const MODE_LABEL = { NORMAL: 'NORMAL', GOTCHA: 'GOTCHA' };
+const MODE_HINT = { NORMAL: '正常对抗', GOTCHA: '负债决胜 · 无上限下注' };
 const CAUSE_LABEL = {
-  BLUFF_CAUGHT: '诈唬被抓', GOTCHA_HIT: '判断命中', GOTCHA_STREAK: '连续被猜中',
+  BLUFF_CAUGHT: '诈唬被抓', GOTCHA_HIT: '被看穿还敢全押', GOTCHA_STREAK: '连续两手上头',
   BIG_POT_LOST: '输掉大底池', ALL_IN_LOST: '全下失利',
 };
-const GUESS_LABEL = { BLUFF: 'BLUFF', STRONG: 'STRONG' };
-const MODES = new Set(['NORMAL', 'EXECUTION', 'COUNTER']);
+const MODES = new Set(['NORMAL', 'GOTCHA']);
 
 const FEED_CAP = 160;          // 单个列表 DOM 上限（服务端另有 30/60 截断）
 const POLL_MS = 1600;
 const POLL_MAX = 20;
 const READ_TICK_MS = 80;       // READ 冷却转圈刷新间隔
+const BATCH_STAGGER_MS = 110;  // 批量碎片逐行错开
 
 const fmt = (n) => {
   const v = Math.round(Number(n) || 0);
@@ -60,7 +63,8 @@ const fmt = (n) => {
 };
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const parseNum = (s) => {
-  const n = Number(String(s ?? '').replace(/[^0-9]/g, ''));
+  // 允许负数（负债显示），只吃掉千分位逗号；非数字（—）→ 0
+  const n = Number(String(s ?? '').replace(/,/g, ''));
   return Number.isFinite(n) ? n : 0;
 };
 const clone = (obj) => {
@@ -86,26 +90,22 @@ const S = {
   heart: null,            // game_over 的临终台词
   endShown: false,
 
-  raiseTouched: false,    // 用户是否动过滑杆
-  raiseValue: 0,
-
-  gotchaOpen: false,      // GOTCHA 二选一确认条是否展开
-  gotchaPosting: false,   // gotcha 请求在途
-  pendingGotchaId: null,  // 在途 gotcha 对应的 CRACK id（用于把结果挂回面板）
+  gotchaPosting: false,   // 进入 GOTCHA 的请求在途
+  pinPosting: false,      // PIN 请求在途
+  pinnedId: null,         // 本会话当前 PIN 的碎片 id（行高亮用；刷新后回退文本匹配）
 
   crackEntries: {},       // id → 证据链条目（面板行重建用）
-  crackResults: {},       // id → { guess, correct }（会话内记忆；服务端给 used 字段时优先）
 
   readUntil: 0,           // READ 冷却截止（ms）
   readWindowMs: 0,        // 转圈窗口（= 刚进入冷却时的剩余时长）
   readTimer: null,        // 冷却转圈 interval id
 
-  chipsRef: 0,            // 筹码堆分母：本局筹码总量（chips + pot 恒定）
+  chipsRef: 0,            // 筹码堆分母：本局筹码总量（chips + pot 恒定，负债下依然成立）
 
   guideOpen: false,
   guideIndex: 0,
   guideClosedOnce: false,
-  hintReadDone: false,    // 「先 READ」一次性提示
+  hintReadDone: false,    // 「先 READ/PIN」一次性提示
   hintGotchaShown: false, // 「GOTCHA 解锁」一次性提示
 
   polls: 0,
@@ -124,16 +124,15 @@ const D = {
   playerZone: null, playerHole: null, playerHandname: null, playerDealer: null,
   playerChips: null, playerStackFill: null, playerBet: null, playerTocall: null,
   handPill: null, history: null, fragPill: null, fragments: null,
+  knownCard: null, knownText: null, knownCheck: null,
   crackPill: null, cracks: null, battlelog: null,
   abStatus: null, abStatusText: null,
   btnFold: null, btnCallcheck: null, callcheckLabel: null,
   btnPressure: null, pressureTo: null, btnHeavy: null, heavyTo: null,
   btnAllin: null, allinLabel: null,
-  raiseBox: null, raiseSlider: null, raiseAmt: null,
-  raiseLabelTop: null, raiseBtnLabel: null, btnRaise: null,
+  btnRaise: null, raiseTo: null,
   mentalHint: null, btnRead: null, readRing: null, readCd: null,
-  btnGotcha: null, gotchaConfirm: null,
-  btnGuessBluff: null, btnGuessStrong: null, btnGuessCancel: null,
+  btnGotcha: null, gotchaLabel: null,
   end: null, endCard: null, endHeart: null, endKicker: null, endTitle: null, endSub: null, btnAgain: null,
   guide: null, guideStep: null, guidePages: null, guideDots: null,
   guidePrev: null, guideSkip: null, guideNext: null, btnGuide: null,
@@ -171,6 +170,26 @@ const modeOf = (view) => {
   return MODES.has(m) ? m : 'NORMAL';
 };
 
+/* ============================================ PIN / 碎片行（📌 判定） */
+
+/** 可 PIN：本手工 READ 生成（有 id）、非负债阶段、（面板行还要求本手）。 */
+function pinnable(f) {
+  if (!f || f.id === null || f.id === undefined) return false;
+  const view = S.view;
+  if (!view || view.phase !== 'playing') return false;
+  if (modeOf(view) === 'GOTCHA') return false;
+  if (f.atHand !== null && f.atHand !== undefined && Number(f.atHand) !== Number(view.handNo)) return false;
+  return true;
+}
+
+/** 当前 PIN 的行（优先会话内 id；刷新后回退文本匹配 —— view.pin 只有 text）。 */
+function isPinned(f) {
+  const pin = S.view?.pin;
+  if (!pin || typeof pin.text !== 'string' || !pin.text) return false;
+  if (S.pinnedId !== null && f && f.id !== null && f.id !== undefined) return String(S.pinnedId) === String(f.id);
+  return Boolean(f && typeof f.text === 'string' && f.text === pin.text);
+}
+
 /* ====================================================== 信息栏：行构造 */
 
 function historyNode(h) {
@@ -184,12 +203,31 @@ function historyNode(h) {
   ]);
 }
 
-/** READ Fragments 面板行：纯文本（类型/标签绝不下发，也不展示）。 */
+/** READ Fragments 面板行：文本 + 可 PIN 的 📌 按钮（类型/标签绝不下发）。 */
 function fragmentNode(f) {
-  return el('div', { class: 'frow', text: str(f?.text, '……') || '……' });
+  const view = S.view;
+  const canPin = pinnable(f);
+  const pinned = isPinned(f);
+  const verified = pinned && view?.pin?.verified === true;
+  const kids = [
+    el('span', { class: 'frow__text', text: str(f?.text, '……') || '……' }),
+  ];
+  if (canPin) {
+    kids.push(el('button', {
+      class: `frow__pin${pinned ? ' is-on' : ''}`,
+      type: 'button',
+      title: pinned ? '已 PIN（再点可重新钉）' : 'PIN 进 Known',
+      text: pinned && verified ? '📌✓' : '📌',
+      on: { click: (e) => { e.stopPropagation(); firePin(f.id); } },
+    }));
+  }
+  return el('div', {
+    class: `frow${pinned ? ' is-pinned' : ''}${verified ? ' is-verified' : ''}`,
+    dataset: { id: f?.id == null ? '' : String(f.id), text: str(f?.text), at: f?.atHand == null ? '' : String(f.atHand) },
+  }, kids);
 }
 
-/** Battle Log 行（feed 中 read/crack 有自己的面板，其余全部进这里）。 */
+/** Battle Log 行（feed 中 read/crack 有自己的面板 → 过滤掉）。 */
 function logNode(item) {
   const kind = str(item?.kind, 'system');
   return el('div', { class: `irow irow--${kind}` }, [
@@ -198,13 +236,14 @@ function logNode(item) {
   ]);
 }
 
-/** CRACK Feedback 面板行：kind + 证据标签胶囊 + strength 点数 + gotcha 结果。 */
+/** CRACK Feedback 面板行：kind + evidence 标签 + 触发行动 + strength 点数。 */
 function crackNode(c) {
   const kind = str(c?.kind, 'WEAKNESS');
+  const action = str(c?.action);
   const strength = clamp(Math.round(Number(c?.strength) || 0), 0, 9);
-  const result = c?.result ?? c?.used ?? S.crackResults[c?.id] ?? null;
   const kids = [
     el('span', { class: `crow__kind crow__kind--${kind}`, text: CRACK_KIND_LABEL[kind] ?? kind }),
+    action ? el('span', { class: 'crow__action', text: `× ${action.toUpperCase()}` }) : null,
     el('span', {
       class: 'crow__str',
       title: `证据强度 ${strength}`,
@@ -216,16 +255,13 @@ function crackNode(c) {
   const evid = el('div', { class: 'crow__evs' },
     arr(c?.evidence).map((tag) => el('span', {
       class: 'crow__ev',
+      title: typeof tag === 'string' ? tag : '',
       text: EVIDENCE_LABEL[tag] ?? (typeof tag === 'string' ? tag : '…'),
     })));
-  const resNode = result
-    ? el('div', { class: `crow__res ${result.correct ? 'is-right' : 'is-wrong'}` },
-      [`GOTCHA ${GUESS_LABEL[result.guess] ?? result.guess} → ${result.correct ? '判断正确' : '判断失误'}`])
-    : null;
   return el('div', {
     class: 'crow',
     dataset: { id: String(c?.id ?? '') },
-  }, [el('div', { class: 'crow__head' }, kids), evid, resNode]);
+  }, [el('div', { class: 'crow__head' }, kids), evid]);
 }
 
 function appendCapped(host, node) {
@@ -270,25 +306,67 @@ function updateFragPill() {
 
 function updateCrackPill(view) {
   if (!D.crackPill) return;
-  const armed = Boolean(view?.gotcha);
+  const g = view?.gotcha && typeof view.gotcha === 'object' ? view.gotcha : null;
   const n = arr(view?.cracks).length;
-  D.crackPill.textContent = armed ? 'GOTCHA 可发动 ⚡' : n > 0 ? `${n} 条链` : '未解锁';
-  D.crackPill.classList.toggle('is-on', armed);
+  if (g) {
+    const have = Math.round(Number(g.cracks) || n);
+    const need = Math.round(Number(g.need) || have) || have;
+    D.crackPill.textContent = `GOTCHA 解锁 ${have}/${need} ⚡`;
+  } else {
+    D.crackPill.textContent = `${n} 条链`;
+  }
+  D.crackPill.classList.toggle('is-on', Boolean(g));
 }
 
-/* ================================================= READ 碎片闪现（不阻塞队列） */
+/** Known 📌 卡片（view.pin 只有 text + verified）。 */
+function renderPin(view) {
+  if (!D.knownCard) return;
+  const pin = (view?.pin && typeof view.pin === 'object') ? view.pin : null;
+  const text = str(pin?.text);
+  D.knownText.textContent = text || '尚未 PIN';
+  D.knownCard.classList.toggle('is-empty', !text);
+  const verified = Boolean(pin && pin.verified === true);
+  D.knownCheck.hidden = !verified;
+  D.knownCard.dataset.verified = String(verified);
+}
 
-function showFragmentFlash(text, flashMs, exec) {
+/** READ Fragments 面板整体重绘（PIN / verified 状态按当前快照判定）。 */
+function renderFragments(view) {
+  const frags = arr(view?.readFragments).filter((f) => f && typeof f === 'object');
+  fillTop(D.fragments, frags.map(fragmentNode));
+  updateFragPill();
+}
+
+/* ====================================== READ 批量闪现（fire-and-forget） */
+
+function showFragmentBatch(frags, flashMs, source, depth) {
   const host = D.fragFlash;
-  if (!host || !text) return;
-  const node = el('div', { class: `fragflash__line${exec ? ' is-exec' : ''}`, text });
-  host.appendChild(node);
-  while (host.children.length > 3) host.firstChild.remove();
-  // flashMs 后自行淡出移除 —— 与事件队列完全解耦
-  setTimeout(() => {
-    node.classList.add('is-out');
-    setTimeout(() => node.remove(), 460);
-  }, flashMs);
+  if (!host || !frags.length) return;
+  const leak = source === 'gotcha';
+  frags.forEach((f, i) => {
+    const canPin = pinnable(f);
+    const line = el('div', {
+      class: `fragflash__line${leak ? ' is-leak' : ''}`,
+      style: { '--i': String(i) },
+    }, [
+      leak && depth > 0 ? el('i', { class: 'fragflash__depth', text: `d${depth}` }) : null,
+      el('span', { class: 'fragflash__text', text: str(f?.text, '……') || '……' }),
+      canPin ? el('button', {
+        class: 'fragflash__pin',
+        type: 'button',
+        title: 'PIN 进 Known',
+        text: '📌',
+        on: { click: (e) => { e.stopPropagation(); firePin(f.id); } },
+      }) : null,
+    ]);
+    host.appendChild(line);
+    const life = flashMs + i * BATCH_STAGGER_MS;
+    setTimeout(() => {
+      line.classList.add('is-out');
+      setTimeout(() => line.remove(), 480);
+    }, life);
+  });
+  while (host.children.length > 9) host.firstChild.remove();
 }
 
 /* ============================================================== 渲染 */
@@ -428,7 +506,7 @@ function renderHud(view) {
 
   const effFallback = Math.min(Math.round(Number(p.chips) || 0), Math.round(Number(boss.chips) || 0));
   const eff = Number(view.effectiveStack);
-  D.hudEff.textContent = fmt(Number.isFinite(eff) ? eff : effFallback);
+  D.hudEff.textContent = fmt(Number.isFinite(eff) ? eff : Math.max(0, effFallback));
 
   const blind = (view.blind && typeof view.blind === 'object') ? view.blind : {};
   D.hudBlind.textContent = Number(blind.sb) > 0 && Number(blind.bb) > 0
@@ -485,7 +563,7 @@ function renderPlayer(view) {
 
 /* --------------------------------------------------------- 筹码堆（§27） */
 
-/** 本局筹码总量：chips + pot 恒定，作为筹码条分母（只增不减，防御服务端异常）。 */
+/** 本局筹码总量：chips + pot 恒定（负债下依然成立），作为筹码条分母。 */
 function chipsRef() {
   const v = S.view;
   if (v) {
@@ -500,8 +578,12 @@ function chipsRef() {
 function setStackFill(seat, chips) {
   const fill = seat === 1 ? D.bossStackFill : D.playerStackFill;
   if (!fill) return;
-  const pct = clamp((Math.max(0, Math.round(Number(chips) || 0)) / chipsRef()) * 100, 0, 100);
+  const value = Math.round(Number(chips) || 0);
+  const pct = clamp((Math.max(0, value) / chipsRef()) * 100, 0, 100);
   fill.style.width = `${pct.toFixed(2)}%`;
+  // 负债：条回缩到 0，数字变红
+  const num = seat === 1 ? D.bossChips : D.playerChips;
+  if (num) num.classList.toggle('is-debt', value < 0);
 }
 
 function renderStacks(view) {
@@ -519,12 +601,11 @@ function renderSidebar(view) {
     .filter((h) => h && typeof h === 'object')
     .map(historyNode));
 
-  // 2) READ Fragments（纯文本，最新在上）
-  const frags = arr(view.readFragments).filter((f) => f && typeof f === 'object');
-  fillTop(D.fragments, frags.map(fragmentNode));
-  updateFragPill();
+  // 2) Known 卡 + READ Fragments（纯文本，最新在上，带 PIN 按钮）
+  renderPin(view);
+  renderFragments(view);
 
-  // 3) CRACK Feedback（证据链 + gotcha 结果；最新在上，与 live 插入一致）
+  // 3) CRACK Feedback（evidence × action 证据链）
   const cracks = arr(view.cracks).filter((c) => c && typeof c === 'object');
   S.crackEntries = {};
   for (const c of cracks) if (c.id != null) S.crackEntries[c.id] = c;
@@ -584,10 +665,10 @@ function tickReadCd() {
   paintReadCd(remain, false);
 }
 
+/** 只负责冷却环与 READY 态（次数文本由 renderActionbar 写）。 */
 function paintReadCd(remain, ready) {
   const frac = ready || S.readWindowMs <= 0 ? 1 : clamp(remain / S.readWindowMs, 0, 1);
   if (D.readRing) D.readRing.style.setProperty('--cd', `${(frac * 360).toFixed(1)}deg`);
-  if (D.readCd) D.readCd.textContent = ready ? 'READY' : `${Math.ceil(remain / 100) / 10}s`;
   if (D.btnRead) D.btnRead.classList.toggle('is-ready', ready);
 }
 
@@ -598,9 +679,15 @@ function renderActionbar(view) {
   const legal = (view.player && typeof view.player.legal === 'object' && view.player.legal)
     ? view.player.legal
     : {};
-  const mode = modeOf(view);
+  const inG = modeOf(view) === 'GOTCHA';
 
-  // FOLD | CALL/CHECK | PRESSURE | HEAVY | ALL IN
+  /* ---- 模式可见性：负债阶段只留 FOLD / CALL-CHECK / RAISE ---- */
+  D.btnPressure.hidden = inG;
+  D.btnHeavy.hidden = inG;
+  D.btnAllin.hidden = inG;
+  D.btnRaise.hidden = !inG;
+
+  /* ---- FOLD | CALL/CHECK ---- */
   D.btnFold.disabled = !(myTurn && legal.fold === true);
 
   const callAmt = Math.round(Number(legal.call) || 0);
@@ -615,55 +702,52 @@ function renderActionbar(view) {
     D.btnCallcheck.disabled = true;
   }
 
+  /* ---- NORMAL：PRESSURE / HEAVY / ALL IN ---- */
   const pressureTo = Math.round(Number(legal.pressureTo) || 0);
   D.pressureTo.textContent = pressureTo > 0 ? fmt(pressureTo) : '—';
-  D.btnPressure.disabled = !(myTurn && legal.pressure === true);
+  D.btnPressure.disabled = inG || !(myTurn && legal.pressure === true);
 
   const heavyTo = Math.round(Number(legal.heavyTo) || 0);
   D.heavyTo.textContent = heavyTo > 0 ? fmt(heavyTo) : '—';
-  D.btnHeavy.disabled = !(myTurn && legal.heavy === true);
+  D.btnHeavy.disabled = inG || !(myTurn && legal.heavy === true);
 
   const allinAmt = Math.round(Number(legal.allin) || 0);
   D.allinLabel.textContent = allinAmt > 0 ? `全下 ${fmt(allinAmt)}` : '全下';
-  D.btnAllin.disabled = !(myTurn && allinAmt > 0);
+  D.btnAllin.disabled = inG || !(myTurn && allinAmt > 0);
 
-  // EXECUTION 专属自由滑杆：mode 门禁 + legal.bet/raise 双保险
-  D.raiseBox.hidden = mode !== 'EXECUTION';
-  const minTo = Math.round(Number(legal.minTo) || 0);
-  const maxTo = Math.round(Number(legal.maxTo) || 0);
-  const canRaise = mode === 'EXECUTION'
-    && myTurn
-    && (legal.bet === true || legal.raise === true)
-    && maxTo > 0;
-  D.raiseBox.classList.toggle('is-locked', !canRaise);
-  D.raiseBox.classList.toggle('is-armed', canRaise);
-  D.btnRaise.disabled = !canRaise;
+  /* ---- GOTCHA：阶梯 RAISE（金额全在服务端，无任何数字输入） ---- */
+  const rawRaiseTo = legal.gotchaRaiseTo;
+  const raiseTo = Math.round(Number(rawRaiseTo) || 0);
+  D.raiseTo.textContent = inG && raiseTo > 0 ? fmt(raiseTo) : '—';
+  const raiseOk = inG && myTurn && raiseTo > 0
+    && rawRaiseTo !== null && rawRaiseTo !== undefined
+    && (legal.raise === true || legal.raise === null || legal.raise === undefined);
+  D.btnRaise.disabled = !raiseOk;
 
-  if (maxTo > 0) {
-    D.raiseSlider.min = String(minTo);
-    D.raiseSlider.max = String(maxTo);
-    const span = Math.max(1, maxTo - minTo);
-    D.raiseSlider.step = String(Math.max(1, Math.round(span / 50)));
-    if (!S.raiseTouched || S.raiseValue < minTo || S.raiseValue > maxTo) {
-      S.raiseValue = clamp(S.raiseValue || minTo, minTo, maxTo);
-    }
-    D.raiseSlider.value = String(S.raiseValue);
-  }
-  D.raiseSlider.disabled = !canRaise;
-  updateRaiseUI();
-
-  // READ：冷却转圈按 readCooldownUntil
+  /* ---- READ：每手限量 + 冷却环 ---- */
+  const per = Math.max(1, Math.round(Number(view.player?.readsPerHand) || 2));
+  const left = Math.max(0, Math.round(Number(view.player?.readsLeft) || 0));
   const now = Date.now();
   const cdUntil = Math.round(Number(view.player?.readCooldownUntil) || 0);
   const cooling = cdUntil > now;
-  D.btnRead.disabled = !(playing && !busy && !cooling);
+  const exhausted = left <= 0;
+  D.readCd.textContent = inG ? '—' : `${left}/${per}`;
+  D.btnRead.classList.toggle('is-empty', !inG && exhausted);
+  D.btnRead.classList.toggle('is-cd', !inG && !exhausted && cooling);
+  D.btnRead.disabled = !(playing && myTurn && !inG && !exhausted && !cooling && !busy);
   syncReadCooldown(view);
 
-  // GOTCHA!：仅 view.gotcha 非空可用（确认条竞态：快照里已无 gotcha 即收起）
+  /* ---- GOTCHA!：达标解锁 → 点亮；负债中 → IN PROGRESS ---- */
   const armed = Boolean(view.gotcha);
-  if (S.gotchaOpen && !armed) closeGotchaConfirm();
-  D.btnGotcha.disabled = !(playing && !busy && armed && !S.gotchaPosting);
-  D.btnGotcha.classList.toggle('is-armed', armed);
+  D.gotchaLabel.textContent = inG ? 'IN PROGRESS' : 'GOTCHA!';
+  D.btnGotcha.classList.toggle('is-armed', armed && !inG);
+  D.btnGotcha.classList.toggle('is-progress', inG);
+  D.btnGotcha.disabled = !(playing && !busy && !S.gotchaPosting && !inG && armed && myTurn);
+  D.btnGotcha.title = inG
+    ? '负债决胜进行中'
+    : armed && typeof view.gotcha === 'object'
+      ? `CRACK ${view.gotcha.cracks ?? '?'}/${view.gotcha.need ?? '?'} 达标 —— 玩家回合发动`
+      : '本手 CRACK 达标后解锁';
 
   updateMentalHint(view);
 
@@ -671,29 +755,17 @@ function renderActionbar(view) {
   setStatus(text, status);
 }
 
-function updateRaiseUI() {
-  const v = S.view;
-  if (!v || !D.raiseSlider) return;
-  const isRaise = Math.round(Number(v.player?.toCall) || 0) > 0;
-  const val = Math.round(Number(S.raiseValue) || 0);
-  D.raiseLabelTop.textContent = isRaise ? '加注至' : '下注至';
-  D.raiseAmt.textContent = fmt(val);
-  D.raiseBtnLabel.textContent = `${isRaise ? '加注' : '下注'} ${fmt(val)}`;
-  const minTo = Number(D.raiseSlider.min) || 0;
-  const maxTo = Number(D.raiseSlider.max) || 0;
-  const pct = maxTo > minTo ? ((val - minTo) / (maxTo - minTo)) * 100 : 0;
-  D.raiseSlider.style.setProperty('--fill', `${clamp(pct, 0, 100)}%`);
-}
-
 /** 特殊操作区的情境提示行。 */
 function updateMentalHint(view) {
   if (!D.mentalHint) return;
   let text;
-  const mode = modeOf(view);
-  if (view.gotcha) text = 'CRACK 成立 —— 押注你的判断：他是在诈，还是真有货？';
-  else if (mode === 'EXECUTION') text = 'EXECUTION：自由下注尺寸开放 · READ 高速连发';
-  else if (mode === 'COUNTER') text = 'COUNTER：他正在反扑 —— 大注比平时更真';
-  else text = 'READ 攒碎片 → 串成证据链 CRACK → GOTCHA 押注判断';
+  const inG = modeOf(view) === 'GOTCHA';
+  const left = Math.max(0, Math.round(Number(view.player?.readsLeft) || 0));
+  if (inG) text = 'GOTCHA：FOLD / CALL / RAISE 阶梯 —— 每次加注风险翻倍';
+  else if (view.gotcha && typeof view.gotcha === 'object') {
+    text = `CRACK ${view.gotcha.cracks ?? '?'}/${view.gotcha.need ?? '?'} 达标 —— 按 GOTCHA! 进入负债决胜`;
+  } else if (left <= 0) text = 'READ 用完了 —— 靠已 PIN 的情报打完这一手';
+  else text = 'PIN 真话 → 用对行动验证 → 攒够 CRACK 解锁 GOTCHA';
   if (D.mentalHint.textContent !== text) D.mentalHint.textContent = text;
 }
 
@@ -738,7 +810,7 @@ async function request(fn) {
 /**
  * 串行播放事件队列。
  * - 单条事件异常只 warn，不中断队列；
- * - finally 之后必渲染 + 解锁 —— 异常路径也不会卡死行动栏与 GOTCHA 确认条；
+ * - finally 之后必渲染 + 解锁 —— 异常路径也不会卡死行动栏；
  * - 播放中新增的事件会在下一轮 while 判断被取走。
  */
 async function pump() {
@@ -756,10 +828,6 @@ async function pump() {
     }
   } finally {
     S.pumping = false;
-    // 队列异常路径的兜底：确认条若还开着但 gotcha 已不存在，收起
-    try {
-      if (S.gotchaOpen && !S.view?.gotcha) closeGotchaConfirm();
-    } catch { /* 忽略 */ }
   }
   if (S.view) {
     try {
@@ -790,14 +858,8 @@ function syncLock() {
     D.btnHeavy.disabled = true;
     D.btnAllin.disabled = true;
     D.btnRaise.disabled = true;
-    D.raiseBox.classList.toggle('is-locked', true);
     D.btnRead.disabled = true;
     D.btnGotcha.disabled = true;
-    D.btnGuessBluff.disabled = true;
-    D.btnGuessStrong.disabled = true;
-  } else {
-    D.btnGuessBluff.disabled = false;
-    D.btnGuessStrong.disabled = false;
   }
 }
 
@@ -816,7 +878,7 @@ async function playEvent(ev) {
   await player(ev);
 }
 
-/** 三状态情绪横幅（v3 单向恶化：CALM → SHAKEN → TILT）。 */
+/** 三状态情绪横幅（v4 仍是单向：CALM → SHAKEN → TILT）。 */
 function showMental(from, to, causeName, hint = null, down = null) {
   const fromT = STATE_LABEL[from] ?? String(from ?? '');
   const toT = STATE_LABEL[to] ?? String(to ?? '');
@@ -858,8 +920,7 @@ const EVENT_PLAYERS = {
     S.playStreet = 'preflop';
     S.liveBet = { 0: 0, 1: 0 };
     S.crackEntries = {};
-    S.crackResults = {};
-    closeGotchaConfirm();
+    S.pinnedId = null;          // PIN 槽按手牌重置
     boardRow.render([]);
     setHandname(D.playerHandname, 0);
     setHandname(D.bossHandname, 1);
@@ -868,6 +929,8 @@ const EVENT_PLAYERS = {
     setBetFlag(D.bossBet, 0);
     clear(D.cracks);
     updateCrackPill(S.view);
+    renderPin({ pin: null });   // 新一手：Known 卡清空（S.view 里的 pin 也应为 null）
+    renderFragments(S.view);    // 重建行：清掉上一手的 PIN 高亮
 
     if (ev.blindUp === true) {
       sfx.blindup();
@@ -919,8 +982,8 @@ const EVENT_PLAYERS = {
     const chipsEl = isBoss ? D.bossChips : D.playerChips;
     if (put > 0) {
       const from = parseNum(chipsEl.textContent);
-      const to = Math.max(0, from - put);
-      fx.animateNumber(chipsEl, from, to, 420); // 输家筹码倒数
+      const to = from - put; // 负债阶段允许为负
+      fx.animateNumber(chipsEl, from, to, 420);
       setStackFill(seat, to);
       S.liveBet[seat] = (S.liveBet[seat] || 0) + put;
       sfx.chip();
@@ -964,7 +1027,7 @@ const EVENT_PLAYERS = {
       case 'allin': sfx.allin(); break;
       default: break;
     }
-    // 全下演出：action==='allin'，或跟注/加注带 allIn 标记（顶格跟到全下）
+    // 全下演出（NORMAL 语义；负债阶段不产生 all-in）
     if (ev.action === 'allin' || ev.allIn === true) {
       if (ev.action !== 'allin') sfx.allin();
       fx.tableZoom(true);
@@ -1001,111 +1064,83 @@ const EVENT_PLAYERS = {
   },
 
   /**
-   * READ 碎片闪现：fire-and-forget —— flashMs 后自行淡出，
-   * 这里只同步追加面板并让出极短一拍，绝不阻塞队列。
+   * READ 批量碎片（manual / gotcha 泄漏）：成组 stacked 闪现、逐行错开、
+   * flashMs 后自行淡出 —— fire-and-forget，只让出一拍，绝不阻塞事件队列。
    */
-  async read_fragment(ev) {
-    const text = str(ev.text);
-    const flashMs = clamp(Math.round(Number(ev.flashMs) || 1000), 300, 4000);
-    const exec = modeOf(S.view) === 'EXECUTION';
+  async read_batch(ev) {
+    const source = str(ev.source) === 'gotcha' ? 'gotcha' : 'manual';
+    const flashMs = clamp(Math.round(Number(ev.flashMs) || 1200), 300, 4000);
+    const depth = Math.max(0, Math.round(Number(ev.depth) || 0));
+    const frags = arr(ev.fragments).filter((f) => f && typeof f === 'object');
+
     sfx.fragment();
-    showFragmentFlash(text, flashMs, exec);
-    if (text) {
-      prependCapped(D.fragments, fragmentNode({ text }));
-      updateFragPill();
-    }
-    if (ev.burst === true) fx.popup(D.bossFace, '信息量暴增', 'hit');
-    await fx.sleep(90); // 只让出一拍给音效/浮层起步 —— 不等 flashMs
+    showFragmentBatch(frags, flashMs, source, depth);
+    // 面板：本批 f0 在最上 → 逆序 prepend
+    for (const f of [...frags].reverse()) prependCapped(D.fragments, fragmentNode(f));
+    updateFragPill();
+    if (source === 'gotcha' && depth > 0) fx.popup(D.bossFace, `心理泄漏 d${depth}`, 'crit');
+    await fx.sleep(110); // 不等 flashMs —— 队列继续走
   },
 
-  /** CRACK：白闪 + 震屏 + 大字 + 面板点亮（允许 1.4s 演出停顿）。 */
+  /** CRACK：白闪 + 震屏 + 大字（副标 = evidence × action）+ 面板点亮 + PIN 打勾。 */
   async crack(ev) {
     const kind = str(ev.kind, 'WEAKNESS');
+    const evidence = arr(ev.evidence);
+    const action = str(ev.action);
     const strength = clamp(Math.round(Number(ev.strength) || 0), 0, 9);
     const entry = {
       id: ev.id,
       kind,
-      evidence: arr(ev.evidence),
+      evidence,
+      action,
       strength,
       critical: ev.critical === true,
-      handNo: S.playHand,
+      handNo: Number(ev.handNo) || S.playHand,
     };
     if (entry.id != null) S.crackEntries[entry.id] = entry;
     prependCapped(D.cracks, crackNode(entry));
     updateCrackPill(S.view);
+    renderPin(S.view);       // verified 已在响应快照里 → Known 卡打勾
+    markPinnedRow();         // 被 PIN 的行高亮 + ✓
 
     sfx.crack();
     fx.flash();
     fx.screenShake(460, 9);
-    await fx.bigText('CRACK!',
-      `${CRACK_KIND_LABEL[kind] ?? kind} · ${strength} 重证据${entry.critical ? ' · CRITICAL' : ''}`,
-      { tone: entry.critical ? 'red' : 'gold', holdMs: 1400 });
+    const evLabel = evidence.map((t) => String(t)).join('+');
+    const sub = action ? `${evLabel || kind} × ${action.toUpperCase()}` : (CRACK_KIND_LABEL[kind] ?? kind);
+    await fx.bigText('CRACK!', sub, { tone: entry.critical ? 'red' : 'gold', holdMs: 1400 });
   },
 
   /**
-   * GOTCHA 结果：
-   * 正确 → GOTCHA! → Hitstop → 牌桌 zoom → Boss 表情 → EXECUTION 大字；
-   * 错误 → GOTCHA! → 停顿 → Boss 反应台词 → COUNTER! 红字 + 红闪。
+   * 进入 GOTCHA：全屏宣告 → 红金警戒边（data-mode="GOTCHA"）→
+   * 行动栏切到 FOLD / CALL / RAISE 阶梯。
    */
-  async gotcha_result(ev) {
-    const id = S.pendingGotchaId;
-    S.pendingGotchaId = null;
-    const guess = str(ev.guess, '—');
-    const correct = ev.correct === true;
-    if (id != null) {
-      S.crackResults[id] = { guess, correct };
-      refreshCrackRow(id); // 已在面板上的那条链补上结果徽章
-    }
-
-    appendCapped(D.battlelog, logNode({
-      kind: 'gotcha',
-      text: `押注 ${GUESS_LABEL[guess] ?? guess} → ${correct ? `判断正确 · ${ev.mode ?? 'EXECUTION'}` : `判断失误 · ${ev.mode ?? 'COUNTER'}`}`,
-    }));
-
-    sfx.gotcha();
-    await fx.bigText('GOTCHA!', `${GUESS_LABEL[guess] ?? guess} · ${correct ? '你赌对了' : '你赌错了'}`,
-      { tone: correct ? 'gold' : 'red', holdMs: 780 });
-
-    if (correct) {
-      await fx.hitstop(260);
-      fx.tableZoom(true);
-      // Boss 表情变化（view 已是终态）
-      const boss = S.view?.boss;
-      if (boss) {
-        D.bossFace.textContent = str(boss.face, STATE_FACE[boss.state] ?? '😏');
-        D.bossMood.textContent = str(boss.mood, STATE_LABEL[boss.state] ?? '');
-        if (boss.state && STATE_LABEL[boss.state]) D.bossZone.dataset.state = boss.state;
-      }
-      fx.avatarShake(360, 8);
-      sfx.execution();
-      await fx.bigText('EXECUTION', '自由下注 · 高速 READ', { tone: 'gold', holdMs: 1300 });
-    } else {
-      await fx.sleep(300); // 短暂停顿
-      const line = str(S.view?.boss?.lastLine);
-      if (line && line !== D.bubbleText.dataset.line) await typeBossLine(line);
-      else fx.popup(D.bossAvatar, '被他骗过去了', 'crit');
-      sfx.counter();
-      fx.flash('red');
-      fx.screenShake(440, 8);
-      await fx.bigText('COUNTER!', '他要反扑了', { tone: 'red', holdMs: 1300 });
-    }
-  },
-
-  /** 模式切换（EXECUTION / COUNTER / NORMAL 回落）。 */
   async mode(ev) {
-    const mode = MODES.has(str(ev.mode)) ? ev.mode : 'NORMAL';
+    const mode = str(ev.mode) === 'GOTCHA' ? 'GOTCHA' : 'NORMAL';
     appendCapped(D.battlelog, logNode({
       kind: 'mode',
-      text: `模式 → ${MODE_LABEL[mode]} · ${MODE_HINT[mode]}`,
+      text: mode === 'GOTCHA' ? '进入 GOTCHA · 负债决胜' : '模式 → NORMAL',
     }));
     D.hudMode.dataset.mode = mode;
     D.hudMode.textContent = MODE_LABEL[mode];
+    D.hudMode.title = `${MODE_LABEL[mode]} · ${MODE_HINT[mode]}`;
     D.app.dataset.mode = mode;
-    if (mode === 'NORMAL') fx.popup(D.hudMode, '回到 NORMAL', 'miss');
-    await fx.sleep(240);
+    if (mode === 'GOTCHA') {
+      sfx.gotcha();
+      fx.flash('red');
+      fx.screenShake(420, 7);
+      await fx.bigText('GOTCHA!', '负债决胜 · 无上限下注', { tone: 'red', holdMs: 1500 });
+    } else {
+      fx.popup(D.hudMode, '回到 NORMAL', 'miss');
+      await fx.sleep(200);
+    }
   },
 
-  /** BUSTED!：立绘震动 + 大字 → 随后的 mode 事件切入 COUNTER。 */
+  async mental(ev) {
+    await showMental(ev.from, ev.to, str(ev.causeName) || str(ev.cause), str(ev.hint) || null, ev.down);
+  },
+
+  /** BUSTED!：立绘震动 + 大字（Boss 获得本手攻击增益，但不切换模式）。 */
   async busted(ev) {
     const line = str(ev.line, '我看穿你了！');
     sfx.busted();
@@ -1115,10 +1150,6 @@ const EVENT_PLAYERS = {
     await fx.bigText('BUSTED!', line, { tone: 'red', holdMs: 1500 });
     await typeBossLine(line);
     await fx.sleep(220);
-  },
-
-  async mental(ev) {
-    await showMental(ev.from, ev.to, str(ev.causeName) || str(ev.cause), str(ev.hint) || null, ev.down);
   },
 
   async showdown(ev) {
@@ -1166,23 +1197,23 @@ const EVENT_PLAYERS = {
   },
 
   async pot_move(ev) {
-    const amount = Math.max(0, Math.round(Number(ev.amount) || 0));
+    const amount = Math.round(Number(ev.amount) || 0); // 结算金额（正常恒为正）
+    const abs = Math.abs(amount);
     const seat = ev.to === 1 ? 1 : 0;
     const target = seat === 1 ? D.bossChips : D.playerChips;
     sfx.chip();
-    await fx.flyChip(D.pot, target, fmt(amount));
+    await fx.flyChip(D.pot, target, fmt(abs));
     const from = parseNum(target.textContent);
-    const to = from + amount;
-    fx.animateNumber(target, from, to, 480); // 赢家筹码累加
+    const to = amount >= 0 ? from + abs : from - abs;
+    fx.animateNumber(target, from, to, 480); // 赢家筹码累加（可把负数债务覆盖掉）
     setStackFill(seat, to);
     D.potValue.textContent = fmt(0);
     await fx.sleep(160);
   },
 
-  /** 结算：筹码堆迁移（数字滚动 + 分段条宽度过渡）≈2s。 */
+  /** 结算：筹码堆迁移（数字滚动 + 分段条宽度过渡，负数显示红色欠额）≈2s。 */
   async hand_end(ev) {
     fx.tableZoom(false);
-    closeGotchaConfirm();
     const winner = ev.winner;
     const pot = Math.max(0, Math.round(Number(ev.pot) || 0));
 
@@ -1228,14 +1259,24 @@ const EVENT_PLAYERS = {
   },
 };
 
-/** 把 gotcha 结果徽章补进已在面板上的那条链。 */
-function refreshCrackRow(id) {
-  if (!D.cracks || id == null) return;
-  const node = D.cracks.querySelector(`[data-id="${CSS.escape(String(id))}"]`);
-  const entry = S.crackEntries[id];
-  if (!node || !entry) return;
-  const fresh = crackNode(entry);
-  node.replaceWith(fresh);
+/** CRACK 后：把 Known 卡的 verified 同步到被 PIN 的面板行。 */
+function markPinnedRow() {
+  const host = D.fragments;
+  const pin = S.view?.pin;
+  if (!host || !pin || typeof pin.text !== 'string' || !pin.text) return;
+  const verified = pin.verified === true;
+  for (const row of host.children) {
+    const pinned = (S.pinnedId !== null && row.dataset.id && row.dataset.id === String(S.pinnedId))
+      || (row.dataset.text && row.dataset.text === pin.text);
+    if (!pinned) continue;
+    row.classList.add('is-pinned');
+    row.classList.toggle('is-verified', verified);
+    const btn = row.querySelector('.frow__pin');
+    if (btn) {
+      btn.classList.add('is-on');
+      btn.textContent = verified ? '📌✓' : '📌';
+    }
+  }
 }
 
 /* ================================================================ 结局 */
@@ -1279,7 +1320,7 @@ function hideEnd() {
 
 /* ============================================== 上下文提示 & 新手引导 */
 
-/** 引导看过之后的一次性情境提示：首手先 READ；首次 CRACK 提醒 GOTCHA。 */
+/** 引导看过之后的一次性情境提示：首手先 READ/PIN；首次解锁提醒 GOTCHA。 */
 function maybeContextHints() {
   if (!S.guideClosedOnce || S.guideOpen) return;
   const v = S.view;
@@ -1288,7 +1329,7 @@ function maybeContextHints() {
   if (!S.hintReadDone && !S.hintGotchaShown && Number(v.handNo) <= 1 && v.toAct === 0) {
     S.hintReadDone = true;
     setTimeout(() => {
-      if (!S.guideOpen) fx.toast('提示：先按 READ 偷看他的碎片，攒出 CRACK 才有 GOTCHA', 'info');
+      if (!S.guideOpen) fx.toast('提示：READ 一组碎片，把最像真话的一条 PIN 进 Known', 'info');
     }, 700);
     return;
   }
@@ -1296,14 +1337,14 @@ function maybeContextHints() {
     S.hintGotchaShown = true;
     S.hintReadDone = true;
     setTimeout(() => {
-      if (!S.guideOpen) fx.toast('证据链成立 —— 按 GOTCHA! 押注你的判断', 'info');
+      if (!S.guideOpen) fx.toast('CRACK 达标 —— 按 GOTCHA! 进入负债决胜', 'info');
     }, 500);
   }
 }
 
 /* ============================================================ 新手引导 */
 
-const GUIDE_KEY = 'allin.guide.v3'; // v3 大改 → 重新弹一次
+const GUIDE_KEY = 'allin.guide.v4'; // v4 大改 → 重新弹一次
 
 function guideSeen() {
   try {
@@ -1399,47 +1440,40 @@ function clearPoll() {
   }
 }
 
-/* ========================================================= GOTCHA 流程 */
+/* ========================================================= PIN / GOTCHA */
 
-function openGotchaConfirm() {
-  if (!S.view?.gotcha || isBusy() || S.gotchaPosting) return;
-  S.gotchaOpen = true;
-  D.gotchaConfirm.hidden = false;
-  D.btnGuessBluff.disabled = false;
-  D.btnGuessStrong.disabled = false;
-  sfx.notify();
+async function firePin(fragmentId) {
+  if (fragmentId === null || fragmentId === undefined) return;
+  if (S.pinPosting || isBusy()) return;   // 串行守卫：避免并发响应覆盖 view
+  if (!pinnable({ id: fragmentId })) return;
+  unlockAudio();
+  S.polls = 0;
+  clearPoll();
+
+  const prevId = S.pinnedId;
+  S.pinPosting = true;
+  S.pinnedId = fragmentId;   // 乐观置位：pump 里的 render 就能高亮正确的行
+  const resp = await request(() => api.pin(fragmentId));
+  S.pinPosting = false;
+  if (!resp) S.pinnedId = prevId; // 失败：回滚高亮
 }
 
-function closeGotchaConfirm() {
-  S.gotchaOpen = false;
-  if (D.gotchaConfirm) D.gotchaConfirm.hidden = true;
-}
-
-async function fireGotcha(guess) {
-  if (!S.gotchaOpen || S.gotchaPosting) return;
-  if (isBusy()) return;            // 其它请求在途：避免并发响应覆盖 view 的竞态
-  if (!S.view?.gotcha) {           // 快照已过期（链被清空）→ 收起确认条
-    closeGotchaConfirm();
-    return;
-  }
+/** 进入 GOTCHA（无任何二选一，直接 POST {}）。 */
+async function enterGotcha() {
+  if (S.gotchaPosting) return;
+  if (isBusy()) return;                 // 其它请求在途：避免并发响应覆盖 view
+  const v = S.view;
+  if (!v || v.phase !== 'playing' || v.toAct !== 0) return;
+  if (!v.gotcha || modeOf(v) !== 'NORMAL') return;
   unlockAudio();
   S.polls = 0;
   clearPoll();
 
   S.gotchaPosting = true;
-  S.pendingGotchaId = S.view.gotcha.id ?? null;
-  closeGotchaConfirm();
-  D.btnGuessBluff.disabled = true;
-  D.btnGuessStrong.disabled = true;
   D.btnGotcha.disabled = true;
-
-  const resp = await request(() => api.gotcha(guess));
-
+  await request(() => api.gotcha());
   S.gotchaPosting = false;
-  D.btnGuessBluff.disabled = false;
-  D.btnGuessStrong.disabled = false;
-  if (!resp) S.pendingGotchaId = null; // 失败：不把结果挂到错误的链上
-  // 解锁交给 pump → render → renderActionbar（按最新 view.gotcha 恢复）
+  // 解锁交给 pump → render → renderActionbar（按最新 view.mode 恢复）
 }
 
 /* ================================================================ 交互 */
@@ -1448,10 +1482,7 @@ async function doAction(action, amount) {
   unlockAudio();
   S.polls = 0;
   clearPoll();
-  closeGotchaConfirm(); // 已经做出扑克回答 —— 确认条收起
-  const resp = await request(() => api.action(action, amount));
-  if (resp) S.raiseTouched = false; // 新的一轮回到默认档位
-  return resp;
+  return request(() => api.action(action, amount));
 }
 
 function bindActions() {
@@ -1465,65 +1496,26 @@ function bindActions() {
   D.btnPressure.addEventListener('click', () => doAction('pressure'));
   D.btnHeavy.addEventListener('click', () => doAction('heavy'));
   D.btnAllin.addEventListener('click', () => doAction('allin'));
+
+  // GOTCHA 阶梯 RAISE：金额完全由服务端按阶梯给出（不带 amount）
   D.btnRaise.addEventListener('click', () => {
-    const toCall = Math.round(Number(S.view?.player?.toCall) || 0);
-    // mode 门禁的最后一道保险
-    if (modeOf(S.view) !== 'EXECUTION') return;
-    doAction(toCall > 0 ? 'raise' : 'bet', Math.round(S.raiseValue));
-  });
-
-  D.raiseSlider.addEventListener('input', () => {
-    S.raiseTouched = true;
-    S.raiseValue = Number(D.raiseSlider.value);
-    updateRaiseUI();
-  });
-
-  document.querySelectorAll('.raise__quick [data-frac]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const v = S.view;
-      if (!v || modeOf(v) !== 'EXECUTION') return;
-      const legal = v.player?.legal ?? {};
-      const minTo = Math.round(Number(legal.minTo) || 0);
-      const maxTo = Math.round(Number(legal.maxTo) || 0);
-      if (maxTo <= 0) return;
-      let target;
-      if (btn.dataset.frac === 'max') {
-        target = maxTo;
-      } else {
-        const invested = Math.round(Number(v.player?.bet) || 0) + Math.round(Number(v.player?.toCall) || 0);
-        target = Math.round(invested + Math.round(Number(v.pot) || 0) * Number(btn.dataset.frac));
-        target = clamp(Math.max(target, minTo), minTo, maxTo);
-      }
-      S.raiseTouched = true;
-      S.raiseValue = target;
-      D.raiseSlider.value = String(target);
-      updateRaiseUI();
-      sfx.chip();
-    });
+    if (modeOf(S.view) !== 'GOTCHA') return;
+    doAction('raise');
   });
 
   D.btnRead.addEventListener('click', async () => {
     unlockAudio();
     S.polls = 0;
     clearPoll();
-    closeGotchaConfirm();
     await request(() => api.read());
   });
 
-  D.btnGotcha.addEventListener('click', () => {
-    unlockAudio();
-    if (S.gotchaOpen) closeGotchaConfirm();
-    else openGotchaConfirm();
-  });
-  D.btnGuessBluff.addEventListener('click', () => fireGotcha('BLUFF'));
-  D.btnGuessStrong.addEventListener('click', () => fireGotcha('STRONG'));
-  D.btnGuessCancel.addEventListener('click', () => closeGotchaConfirm());
+  D.btnGotcha.addEventListener('click', () => enterGotcha());
 
   D.btnAgain.addEventListener('click', async () => {
     unlockAudio();
     S.polls = 0;
     clearPoll();
-    closeGotchaConfirm();
     S.chipsRef = 0; // 新一局：筹码堆分母重新观测
     await request(() => api.newgame());
   });
@@ -1547,7 +1539,6 @@ function bindKeyboard() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (S.guideOpen) closeGuide();
-      else if (S.gotchaOpen) closeGotchaConfirm();
       return;
     }
     if (S.guideOpen) return; // 引导打开时屏蔽快捷键
@@ -1562,21 +1553,20 @@ function bindKeyboard() {
     } else if (key === 'c') {
       if (!D.btnCallcheck.disabled) D.btnCallcheck.click();
     } else if (key === 'p') {
-      if (!D.btnPressure.disabled) D.btnPressure.click();
+      if (!D.btnPressure.hidden && !D.btnPressure.disabled) D.btnPressure.click();
     } else if (key === 'h') {
-      if (!D.btnHeavy.disabled) D.btnHeavy.click();
+      if (!D.btnHeavy.hidden && !D.btnHeavy.disabled) D.btnHeavy.click();
     } else if (key === 'a') {
-      if (!D.btnAllin.disabled) D.btnAllin.click();
+      if (!D.btnAllin.hidden && !D.btnAllin.disabled) D.btnAllin.click();
     } else if (key === 'r') {
       if (!D.btnRead.disabled) D.btnRead.click();
     } else if (key === 'g') {
       if (!D.btnGotcha.disabled) {
         e.preventDefault();
-        if (S.gotchaOpen) closeGotchaConfirm();
-        else openGotchaConfirm();
+        enterGotcha();
       }
     } else if (e.key === 'Enter') {
-      if (!D.btnRaise.disabled && !D.raiseBox.hidden) {
+      if (!D.btnRaise.hidden && !D.btnRaise.disabled) {
         e.preventDefault();
         D.btnRaise.click();
       }
@@ -1632,6 +1622,9 @@ function bindDom() {
   D.history = $('#history');
   D.fragPill = $('#frag-pill');
   D.fragments = $('#fragments');
+  D.knownCard = $('#known-card');
+  D.knownText = $('#known-text');
+  D.knownCheck = $('#known-check');
   D.crackPill = $('#crack-pill');
   D.cracks = $('#cracks');
   D.battlelog = $('#battlelog');
@@ -1647,22 +1640,15 @@ function bindDom() {
   D.heavyTo = $('#heavy-to');
   D.btnAllin = $('#btn-allin');
   D.allinLabel = $('#allin-label');
-  D.raiseBox = $('#raise-box');
-  D.raiseSlider = $('#raise-slider');
-  D.raiseAmt = $('#raise-amt');
-  D.raiseLabelTop = $('#raise-label-top');
-  D.raiseBtnLabel = $('#raise-btn-label');
   D.btnRaise = $('#btn-raise');
+  D.raiseTo = $('#raise-to');
 
   D.mentalHint = $('#mental-hint');
   D.btnRead = $('#btn-read');
   D.readRing = $('#read-ring');
   D.readCd = $('#read-cd');
   D.btnGotcha = $('#btn-gotcha');
-  D.gotchaConfirm = $('#gotcha-confirm');
-  D.btnGuessBluff = $('#btn-guess-bluff');
-  D.btnGuessStrong = $('#btn-guess-strong');
-  D.btnGuessCancel = $('#btn-guess-cancel');
+  D.gotchaLabel = $('#gotcha-label');
 
   D.end = $('#end');
   D.endCard = D.end.querySelector('.end__card');

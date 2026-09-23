@@ -1,12 +1,18 @@
 /**
- * api.js — docs/PROTOCOL.md（v3）的 5 个 HTTP 接口的极薄 fetch 封装。
+ * api.js — docs/PROTOCOL.md（v4）的 5 个 HTTP 接口的极薄 fetch 封装。
  * 服务端权威：这里不做任何状态缓存，只负责请求/解析/抛错。
  *
  *   GET  /api/state      → { view }
  *   POST /api/action     { action, amount? } → { view, events }
- *   POST /api/read       → { view, events }（无限次，READ_COOLDOWN_MS 冷却）
- *   POST /api/gotcha     { guess: "BLUFF" | "STRONG" } → { view, events }
+ *   POST /api/read       → { view, events }（每手 readsPerHand 次 + READ_COOLDOWN_MS 冷却，
+ *                            响应事件为 read_batch 批量碎片）
+ *   POST /api/pin        { fragmentId } → { view, events }（单槽保留一条碎片）
+ *   POST /api/gotcha     {} → { view, events }（CRACK 达标后进入负债决胜状态）
  *   POST /api/newgame    → { view, events }
+ *
+ * 错误码（400）：READ_EXHAUSTED / READ_COOLING / NO_READS_TURN、BAD_FRAGMENT / PIN_NOT_ALLOWED、
+ * GOTCHA_NOT_ARMED、NOT_GOTCHA（NORMAL 里裸 bet/raise）、GOTCHA_ACTIONS（负债阶段的 pressure/heavy）、
+ * GOTCHA_LOCKED、NOT_YOUR_TURN / HAND_OVER / BATTLE_OVER。
  */
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
@@ -43,16 +49,20 @@ export const api = {
   state: () => request('GET', '/api/state'),
 
   /** POST /api/action { action, amount? } → { view, events }
-   *  action ∈ fold|call|check|pressure|heavy|allin|bet|raise；
-   *  bet/raise 仅 EXECUTION 模式合法（否则 400 NOT_EXECUTION）。 */
+   *  NORMAL：fold|call|check|pressure|heavy|allin（bet/raise → 400 NOT_GOTCHA）
+   *  GOTCHA：fold|call|check|raise（raise 省略 amount = 服务端按阶梯给；
+   *          pressure/heavy/allin → 400 GOTCHA_ACTIONS）。 */
   action: (action, amount) =>
     request('POST', '/api/action', amount === undefined ? { action } : { action, amount }),
 
-  /** POST /api/read → { view, events}（事件里带 read_fragment 闪现） */
+  /** POST /api/read → { view, events }（事件里带 read_batch 批量碎片） */
   read: () => request('POST', '/api/read'),
 
-  /** POST /api/gotcha { guess } → { view, events }（事件里带 gotcha_result） */
-  gotcha: (guess) => request('POST', '/api/gotcha', { guess }),
+  /** POST /api/pin { fragmentId } → { view, events }（view.pin = { text, verified }） */
+  pin: (fragmentId) => request('POST', '/api/pin', { fragmentId }),
+
+  /** POST /api/gotcha {} → { view, events }（事件里带 mode:"GOTCHA"） */
+  gotcha: () => request('POST', '/api/gotcha', {}),
 
   /** POST /api/newgame → { view, events }（随时可用，热加载 balance.json） */
   newgame: () => request('POST', '/api/newgame'),

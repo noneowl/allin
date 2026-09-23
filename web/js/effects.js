@@ -55,7 +55,7 @@ export async function hitstop(ms = 150) {
   document.body.classList.remove('hitstop');
 }
 
-/** 闪屏。tone: 'white'（默认，CRACK/打击）| 'red'（COUNTER / BUSTED）。 */
+/** 闪屏。tone: 'white'（默认，CRACK/打击）| 'red'（BUSTED / 高压宣告）。 */
 export function flash(tone = 'white') {
   const node = el('div', { class: `fx-flash${tone === 'red' ? ' fx-flash--red' : ''}` });
   document.body.appendChild(node);
@@ -214,7 +214,7 @@ export async function impact({ title, sub = '', tone = 'red', sfxName = 'hit' } 
   }
   avatarShake();
   screenShake();
-  flash(); // 打击主链保持白闪（COUNTER/BUSTED 的红闪由 app 直接调用 flash('red')）
+  flash(); // 打击主链保持白闪（红闪由 app 直接调用 flash('red')）
   shockwave(document.getElementById('boss-avatar'));
   setTimeout(() => bigText(title, sub, { tone: tone === 'gold' ? 'gold' : 'red' }), 90);
   await sleep(880);
