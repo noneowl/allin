@@ -54,12 +54,17 @@ const CAUSE_LABEL = {
 const MODES = new Set(['NORMAL', 'GOTCHA']);
 const HIGH_COMMIT = new Set(['bet', 'raise', 'allin']); // GOTCHA 窗口的「高承诺行动」集合
 
+/** v6 Opening 强度（契约 §1）：view.tellWindow.strength → 中央轻提示文案；绝不显示概率数字。 */
+const STRENGTH_LABEL = { WEAK: '微弱', NORMAL: '明显', STRONG: '强烈' };
+
 const FEED_CAP = 160;          // 单个列表 DOM 上限（服务端另有 30/60 截断）
 const POLL_MS = 1600;
 const POLL_MAX = 20;
 const READ_TICK_MS = 80;       // READ 冷却转圈刷新间隔
 const BATCH_STAGGER_MS = 110;  // 批量碎片逐行错开
 const TELL_LIGHT_MS = 150;     // tell_window_open 轻提示只让出这一拍（不阻塞队列）
+const HYPO_MS = 2200;          // v6 HYPOTHESIS 横条驻留（1.5–2.5s 区间；行动即清以 view 为准）
+const CRACK_HOLD_MS = 460;     // v6 CRACK 大字收紧：整段命中演出 ≤ 1s
 
 const fmt = (n) => {
   const v = Math.round(Number(n) || 0);
@@ -106,6 +111,11 @@ const S = {
   readWindowMs: 0,        // 转圈窗口（= 刚进入冷却时的剩余时长）
   readTimer: null,        // 冷却转圈 interval id
 
+  pick: null,             // v6 选择层状态 { twId, firstId }；null = 层关闭（打开时禁用其他行动按钮）
+  hypoKey: '',            // v6 当前展示过的 hypothesis 键（''=无），避免横条反复重播
+  hypoTimer: null,        // v6 HYPOTHESIS 横条自动收起定时器
+  openingId: null,        // 当前 OPENING 提示所属窗口 id（换窗才重播一次入场）
+
   chipsRef: 0,            // 筹码堆分母：本局筹码总量（chips + pot 恒定，负债下依然成立）
 
   guideOpen: false,
@@ -137,7 +147,13 @@ const D = {
   btnFold: null, btnCallcheck: null, callcheckLabel: null,
   btnPressure: null, pressureTo: null, btnHeavy: null, heavyTo: null,
   btnAllin: null, allinLabel: null,
-  btnRaise: null, raiseTo: null,
+  btnRaise: null, raiseTo: null, cellRaise: null,
+  hintFold: null, hintCallcheck: null, hintPressure: null, hintHeavy: null,
+  hintAllin: null, hintRaise: null,
+  hypoBar: null, hypoText: null,
+  openingNote: null, openingStrength: null,
+  specialSlot: null,
+  pickLayer: null, pickRows: null,
   mentalHint: null, btnRead: null, readRing: null, readCd: null,
   tellToast: null, tellToastText: null,
   btnGotcha: null, gotchaLabel: null,
@@ -184,6 +200,22 @@ const tellWindowOf = (view) => {
   return tw && typeof tw === 'object' ? tw : null;
 };
 
+/** v6 Opening 强度（契约 §1）：非法/缺失一律回落 NORMAL（默认值，绝不猜概率）。 */
+const STRENGTHS = new Set(['WEAK', 'NORMAL', 'STRONG']);
+function strengthOf(tw) {
+  const raw = str(tw?.strength).toUpperCase();
+  return STRENGTHS.has(raw) ? raw : 'NORMAL';
+}
+
+/** v6 HYPOTHESIS（契约 §3）：mode ∈ want|fear + action；字段缺失/非法回落 null。 */
+function hypothesisOf(view) {
+  const h = view?.hypothesis;
+  if (!h || typeof h !== 'object') return null;
+  if (h.mode !== 'want' && h.mode !== 'fear') return null;
+  if (typeof h.action !== 'string' || !h.action) return null;
+  return h;
+}
+
 /** Focus（v5 资源，取代旧的每手次数）：focus 缺省 0（翻前/耗尽都不可读），focusMax 缺省 2。 */
 function focusOf(view) {
   const p = view?.player;
@@ -214,6 +246,10 @@ function applyDefaults(view) {
   if (view.tellWindow === undefined) view.tellWindow = null;
   if (view.gotcha === undefined) view.gotcha = null;
   if (view.pin === undefined) view.pin = null;
+  if (view.hypothesis === undefined) view.hypothesis = null;
+  if (view.hypothesis !== null && hypothesisOf(view) === null) view.hypothesis = null;
+  const combo = Math.round(Number(view.comboCount));
+  view.comboCount = Number.isFinite(combo) && combo > 0 ? combo : 0;   // v6 combo 缺省 0
   if (!Array.isArray(view.readFragments)) view.readFragments = [];
   if (!Array.isArray(view.cracks)) view.cracks = [];
   if (!Array.isArray(view.feed)) view.feed = [];
@@ -361,7 +397,9 @@ function fillTop(host, nodes) {
 
 function updateFragPill() {
   if (!D.fragPill) return;
-  D.fragPill.textContent = `${D.fragments?.children.length ?? 0} 条`;
+  const n = D.fragments?.children.length ?? 0;
+  D.fragPill.textContent = n > 0 ? `已选 ${n} 条` : '已收起';
+  D.fragPill.title = 'v6：选择层收起后，这里只保留已钉的一行历史';
 }
 
 function updateCrackPill(view) {
@@ -392,10 +430,14 @@ function renderPin(view) {
   D.knownCard.dataset.verified = String(verified);
 }
 
-/** READ Fragments 面板整体重绘（PIN / verified 状态按当前快照判定）。 */
+/**
+ * READ Fragments 面板整体重绘（v6：不再堆长列表 —— 只保留已选/已 PIN 的一行，
+ * 其余碎片只存在于中央选择层的一瞬；类型与真假从头到尾不下发、不渲染）。
+ */
 function renderFragments(view) {
   const frags = arr(view?.readFragments).filter((f) => f && typeof f === 'object');
-  fillTop(D.fragments, frags.map(fragmentNode));
+  const keep = frags.filter((f) => isPinned(f)).slice(0, 1);
+  fillTop(D.fragments, keep.map(fragmentNode));
   updateFragPill();
 }
 
@@ -452,6 +494,7 @@ function render(view) {
   for (const step of [
     renderBoss, renderBoard, renderHud, renderPlayer, renderStacks,
     renderSidebar, renderActionbar, renderPhase, syncTellToast,
+    syncPick, syncOpening, syncHypothesis,
   ]) {
     try {
       step(view);
@@ -508,6 +551,155 @@ function syncTellToast(view) {
     void D.tellToast.offsetWidth;   // 强制 reflow：换窗口才重播入场动画
     D.tellToast.classList.add('is-new');
   }
+}
+
+/* ====================================== v6：OPENING 提示 / 选择层 / HYPOTHESIS */
+
+/**
+ * Opening 中央轻提示（契约 §1）：开窗浮出「OPENING! 心理波动：微弱/明显/强烈」，
+ * strength 取 view.tellWindow.strength（labels 优先用 wire 上的 opening.labels，缺省用本地映射）；
+ * 关窗即灭（以 view 为准）。绝不显示任何概率数字。
+ */
+function syncOpening(view) {
+  if (!D.openingNote) return;
+  const playing = view.phase === 'playing';
+  const tw = playing && view.toAct === 0 ? tellWindowOf(view) : null;
+  if (!tw) {
+    D.openingNote.hidden = true;
+    S.openingId = null;
+    return;
+  }
+  const key = strengthOf(tw);
+  const labels = (view.opening && typeof view.opening.labels === 'object' && view.opening.labels)
+    ? view.opening.labels
+    : STRENGTH_LABEL;
+  const label = str(labels?.[key], STRENGTH_LABEL[key]) || STRENGTH_LABEL.NORMAL;
+  if (D.openingStrength.textContent !== label) D.openingStrength.textContent = label;
+  D.openingNote.hidden = false;
+  const id = tw.id === null || tw.id === undefined ? `#${key}` : String(tw.id);
+  if (S.openingId !== id) {
+    S.openingId = id;
+    D.openingNote.classList.remove('is-new');
+    void D.openingNote.offsetWidth;
+    D.openingNote.classList.add('is-new');
+  }
+}
+
+/**
+ * HYPOTHESIS 横条（契约 §3/§4）：以 view.hypothesis 为唯一权威 ——
+ * 出现即显示（约 2.2s 后自动收起），变 null（玩家行动/换手）立刻清掉，不本地滞留。
+ */
+function syncHypothesis(view) {
+  if (!D.hypoBar) return;
+  const h = hypothesisOf(view);
+  const key = h ? `${h.mode}:${h.action}` : '';
+  if (key === S.hypoKey) return;
+  S.hypoKey = key;
+  if (S.hypoTimer !== null) {
+    clearTimeout(S.hypoTimer);
+    S.hypoTimer = null;
+  }
+  if (!h) {
+    D.hypoBar.hidden = true;
+    return;
+  }
+  D.hypoText.textContent = h.mode === 'want' ? `他希望你 ${h.action}` : `他害怕 ${h.action}`;
+  D.hypoBar.hidden = false;
+  D.hypoBar.classList.remove('is-new');
+  void D.hypoBar.offsetWidth;
+  D.hypoBar.classList.add('is-new');
+  S.hypoTimer = setTimeout(() => {
+    S.hypoTimer = null;
+    D.hypoBar.hidden = true;   // 横条只做短提示；按钮下关系小字仍以 view.hypothesis 持续到行动
+  }, HYPO_MS);
+}
+
+/** 契约 §4 按钮关系文案（纯前端；只描述关系，不带任何引导性/判定性字样）。PRESSURE/HEAVY 按 RAISE 族处理。 */
+function hintFor(action, h) {
+  if (!h || !action) return '';
+  const isRaise = (a) => a === 'RAISE' || a === 'PRESSURE' || a === 'HEAVY';
+  if (action === h.action) return h.mode === 'want' ? '顺从他的意图' : '直接测试他的恐惧';
+  if (h.mode === 'want') {
+    if (action === 'CALL') return '挑战他的意图';
+    if (isRaise(action)) return '施压';
+    if (action === 'FOLD') return '拒绝';
+    if (action === 'CHECK') return '观望';
+    return '';
+  }
+  if (action === 'CALL') return '保守回应';
+  if (isRaise(action)) return '反向追问';
+  if (action === 'FOLD') return '退开观察';
+  if (action === 'CHECK') return '原地试探';
+  return '';
+}
+
+function setHint(node, text) {
+  if (!node) return;
+  const t = str(text);
+  if (node.textContent !== t) node.textContent = t;
+  node.hidden = !t;
+}
+
+/**
+ * 选择层竞态收口：层开着时任何「窗口没了/批次换了/碎片清了/回合变了」都立刻收层，
+ * 以 view 为准 —— 层绝不跨窗口存活，也不会把玩家卡在过期的批次上。
+ */
+function pickShouldClose(view) {
+  if (!S.pick) return false;
+  if (!view || typeof view !== 'object') return true;
+  if (view.phase !== 'playing' || view.toAct !== 0) return true;
+  if (modeOf(view) === 'GOTCHA') return true;
+  const tw = tellWindowOf(view);
+  if (!tw) return true;
+  const curWin = tw.id === null || tw.id === undefined ? null : String(tw.id);
+  if (S.pick.twId !== curWin) return true;
+  const frags = arr(view.readFragments).filter((f) => f && typeof f === 'object');
+  if (!frags.length) return true;
+  return !frags.some((f) => f.id !== null && f.id !== undefined && String(f.id) === S.pick.firstId);
+}
+
+function syncPick(view) {
+  if (pickShouldClose(view)) closePick();
+}
+
+/** 收层：其余行立即消失 + 恢复其他行动按钮（异常路径最终一定走到这里）。 */
+function closePick() {
+  S.pick = null;
+  if (D.pickLayer) D.pickLayer.hidden = true;
+  if (D.pickRows) clear(D.pickRows);
+  if (S.view) {
+    try { renderActionbar(S.view); } catch { /* 解锁交给 pump 的 render 兜底 */ }
+  }
+}
+
+/** 开层：桌面中央 3–5 行大字（同款样式同款可信度），其他行动按钮同步禁用。 */
+function openPick(frags, twId) {
+  if (!D.pickLayer || !D.pickRows || !frags.length) return;
+  S.pick = {
+    twId: twId === null || twId === undefined ? null : String(twId),
+    firstId: frags[0]?.id === null || frags[0]?.id === undefined ? null : String(frags[0].id),
+  };
+  clear(D.pickRows);
+  frags.forEach((f, i) => {
+    D.pickRows.appendChild(el('button', {
+      class: 'pick__row',
+      type: 'button',
+      style: { '--i': String(i) },
+      text: str(f?.text, '……') || '……',
+      on: { click: () => choosePick(f) },
+    }));
+  });
+  D.pickLayer.hidden = false;
+  try { if (S.view) renderActionbar(S.view); } catch { /* 忽略 */ }
+}
+
+/** 点选一行：其余行立即消失、层关闭 → PIN（生成 Hypothesis）→ 立即回到牌桌。 */
+async function choosePick(f) {
+  if (!S.pick) return;                       // 二次点击直接无效（层已关）
+  if (f?.id === null || f?.id === undefined) return;
+  const id = f.id;
+  closePick();                               // 先收层，再发请求（不跳页、不二次确认）
+  await firePin(id);
 }
 
 function handOf(seat) {
@@ -795,8 +987,9 @@ function paintReadCd(remain, ready) {
 
 function renderActionbar(view) {
   const busy = isBusy();
+  const picking = Boolean(S.pick);          // v6 选择层打开 → 其他行动按钮临时禁用
   const playing = view.phase === 'playing';
-  const myTurn = playing && view.toAct === 0 && !busy;
+  const myTurn = playing && view.toAct === 0 && !busy && !picking;
   const legal = (view.player && typeof view.player.legal === 'object' && view.player.legal)
     ? view.player.legal
     : {};
@@ -807,6 +1000,7 @@ function renderActionbar(view) {
   D.btnHeavy.hidden = inG;
   D.btnAllin.hidden = inG;
   D.btnRaise.hidden = !inG;
+  if (D.cellRaise) D.cellRaise.hidden = inG;
 
   /* ---- FOLD | CALL/CHECK ---- */
   D.btnFold.disabled = !(myTurn && legal.fold === true);
@@ -845,7 +1039,7 @@ function renderActionbar(view) {
     && (legal.raise === true || legal.raise === null || legal.raise === undefined);
   D.btnRaise.disabled = !raiseOk;
 
-  /* ---- READ：Tell Window 门禁 + FOCUS 资源 + 冷却环 ---- */
+  /* ---- READ / GOTCHA 单一特殊位：平时 READ；窗口点亮同位置放大号 GOTCHA!；GOTCHA 中不可点 ---- */
   const tw = tellWindowOf(view);
   const inWindow = Boolean(tw) && view.toAct === 0;
   const { focus, focusMax } = focusOf(view);
@@ -856,28 +1050,48 @@ function renderActionbar(view) {
   D.readCd.textContent = inG ? '—' : `FOCUS ${focus}/${focusMax}`;
   D.btnRead.classList.toggle('is-empty', !inG && (exhausted || !inWindow));
   D.btnRead.classList.toggle('is-cd', !inG && !exhausted && inWindow && cooling);
-  // 双门禁：窗口存在（READ 唯一时机）+ Focus 充足 + 冷却结束 + 非负债 + 空闲
-  D.btnRead.disabled = !(playing && myTurn && !inG && inWindow && !exhausted && !cooling && !busy);
-  D.btnRead.title = inG
-    ? '负债阶段 READ 禁用 —— 情报只从心理泄漏里来'
-    : !playing ? '对局结束'
-      : !inWindow ? 'READ 只在他刚行动后的心理窗口内开放（等你回应的一瞬）'
-        : exhausted ? `FOCUS 耗尽（${focus}/${focusMax}）—— 翻前不开放、进街 +1、上限 2`
-          : cooling ? 'READ 冷却中…' : `窗口开启 · 他刚${tw.bossAction ? (ACTION_LABEL[tw.bossAction] ?? tw.bossAction) : '行动'} —— 消耗 1 FOCUS`;
-  syncReadCooldown(view);
 
-  /* ---- GOTCHA!：资格×时机窗口点亮 → 玩家回合发动（与 mode 双门禁） ---- */
   const g = gotchaOf(view);
   const armed = Boolean(g) && !inG;
-  D.gotchaLabel.textContent = inG ? 'IN PROGRESS' : 'GOTCHA!';
+  const showGotcha = armed || inG;           // GOTCHA 窗口亮起 / 负债中 → 占据同一特殊位
+  if (D.specialSlot) D.specialSlot.dataset.slot = showGotcha ? 'gotcha' : 'read';
+  D.btnRead.hidden = showGotcha;
+  D.btnGotcha.hidden = !showGotcha;
+  // 双门禁：窗口存在（READ 唯一时机）+ Focus 充足 + 冷却结束 + 非负债 + 空闲 + 选择层未开
+  D.btnRead.disabled = showGotcha
+    || !(playing && myTurn && !inG && inWindow && !exhausted && !cooling && !busy && !picking);
+  D.btnRead.title = showGotcha
+    ? 'GOTCHA 窗口已占据特殊位 —— 按 GOTCHA! 发动'
+    : inG
+      ? '负债阶段 READ 禁用 —— 情报只从心理泄漏里来'
+      : !playing ? '对局结束'
+        : !inWindow ? 'READ 只在他刚行动后的心理窗口内开放（等你回应的一瞬）'
+          : exhausted ? `FOCUS 耗尽（${focus}/${focusMax}）—— 翻前不开放、进街 +1、上限 2`
+            : cooling ? 'READ 冷却中…'
+              : picking ? '选择层已打开 —— 先点一条碎片'
+                : `窗口开启 · 他刚${tw.bossAction ? (ACTION_LABEL[tw.bossAction] ?? tw.bossAction) : '行动'} —— 消耗 1 FOCUS`;
+  syncReadCooldown(view);
+
+  /* ---- GOTCHA!：资格×时机窗口点亮 → 玩家回合发动（与 mode 双门禁；零菜单直接进流程） ---- */
+  D.gotchaLabel.textContent = inG ? 'GOTCHA 中' : 'GOTCHA!';
   D.btnGotcha.classList.toggle('is-armed', armed);
   D.btnGotcha.classList.toggle('is-progress', inG);
-  D.btnGotcha.disabled = !(playing && !busy && !S.gotchaPosting && !inG && armed && myTurn);
+  D.btnGotcha.disabled = !(playing && !busy && !picking && !S.gotchaPosting && !inG && armed && myTurn);
   D.btnGotcha.title = inG
-    ? '负债决胜进行中'
+    ? 'GOTCHA 中 —— 负债决胜进行中（本位不可点）'
     : armed
       ? `窗口条件满足：${STREET_LABEL[g.street] ?? str(g.street, '—')} · 他刚${ACTION_LABEL[g.bossAction] ?? str(g.bossAction, '行动')} —— 按钮点亮`
       : `需要 Boss EXPOSED + 转/河 + 他刚在本街做过 ${[...HIGH_COMMIT].join('/')} + 轮到你`;
+
+  /* ---- v6 按钮关系小字（契约 §4）：hypothesis 为 null → 全部清空，不显示任何提示 ---- */
+  const h = hypothesisOf(view);
+  setHint(D.hintFold, hintFor('FOLD', h));
+  setHint(D.hintCallcheck, hintFor(
+    legal.check === true && Math.round(Number(legal.call) || 0) <= 0 ? 'CHECK' : 'CALL', h));
+  setHint(D.hintPressure, hintFor('PRESSURE', h));
+  setHint(D.hintHeavy, hintFor('HEAVY', h));
+  setHint(D.hintAllin, '');                   // ALLIN 不在 §4 文案集内 → 恒无提示
+  setHint(D.hintRaise, inG ? hintFor('RAISE', h) : '');
 
   updateMentalHint(view);
 
@@ -926,6 +1140,10 @@ function applyResponse(resp) {
       renderFragments(S.view);
       renderPin(S.view);
       if (!tellWindowOf(S.view)) syncTellToast(S.view); // 关窗立刻收提示；开窗留给事件按节奏浮出
+      // v6 竞态收口：响应一落地就按权威快照收掉选择层 / OPENING / HYPOTHESIS（不等事件播完）
+      syncPick(S.view);
+      syncOpening(S.view);
+      syncHypothesis(S.view);
     } catch (err) {
       console.warn('[同步] 响应快照面板同步失败', err);
     }
@@ -992,7 +1210,8 @@ async function pump() {
  */
 function syncLock() {
   if (!D.btnFold) return;
-  const lock = isBusy();
+  // v6：选择层打开也算锁定态（其他行动按钮临时禁用），异常路径也由这里兜底解锁
+  const lock = isBusy() || Boolean(S.pick);
   const playing = S.view ? S.view.phase === 'playing' : true;
   const [text, mode] = statusFor(S.view, isBusy());
   setStatus(text, mode);
@@ -1070,6 +1289,8 @@ const EVENT_PLAYERS = {
     S.pinnedId = null;          // PIN 槽按窗口/手牌重置
     S.fragWindow = null;
     S.tellId = null;
+    S.openingId = null;
+    closePick();                // v6：选择层绝不跨手牌存活
     boardRow.render([]);
     setHandname(D.playerHandname, 0);
     setHandname(D.bossHandname, 1);
@@ -1226,8 +1447,18 @@ const EVENT_PLAYERS = {
     const frags = arr(ev.fragments).filter((f) => f && typeof f === 'object');
 
     sfx.fragment();
-    showFragmentBatch(frags, flashMs, source, depth);
-    // 面板以 view.readFragments 整体重渲染为准（当前窗口批次在最上；与闪现顺序一致）
+    if (source === 'manual') {
+      // v6：桌面中央即时选择层（3–5 行大字）—— 点一行即 PIN，其余即刻消失、层关闭；
+      // 不再往 Boss 区闪长列表（面板也只留已选一行）。层开着时其他行动按钮由 renderActionbar 禁用。
+      if (frags.length) {
+        openPick(frags, ev.tellWindowId ?? S.view?.tellWindow?.id ?? null);
+      } else {
+        showFragmentBatch(frags, flashMs, source, depth); // 空批次兜底（不应发生）
+      }
+    } else {
+      showFragmentBatch(frags, flashMs, source, depth);   // GOTCHA 心理泄漏：沿用成组闪现
+    }
+    // 面板以 view.readFragments 整体重渲染为准（v6：只保留已选的一行）
     try {
       syncFragmentWindow(S.view ?? {});
       renderFragments(S.view ?? {});
@@ -1238,7 +1469,7 @@ const EVENT_PLAYERS = {
     await fx.sleep(110); // 不等 flashMs —— 队列继续走
   },
 
-  /** CRACK：白闪 + 震屏 + 大字（副标 = evidence × action）+ 面板点亮 + PIN 打勾。 */
+  /** CRACK：白闪 + 震屏 + 大字（副标 = evidence × action，N≥2 时带 CRACK ×N）+ 面板点亮 + PIN 打勾。 */
   async crack(ev) {
     const kind = str(ev.kind, 'WEAKNESS');
     const evidence = arr(ev.evidence);
@@ -1259,12 +1490,17 @@ const EVENT_PLAYERS = {
     renderPin(S.view);       // verified 已在响应快照里 → Known 卡打勾
     markPinnedRow();         // 被 PIN 的行高亮 + ✓
 
+    // v6 收紧节奏：命中确认感 ≤ 1s（flash/shake/大字保留），紧接 Boss 受创台词（talk）与心理横幅
     sfx.crack();
     fx.flash();
-    fx.screenShake(460, 9);
+    fx.screenShake(320, 7);
+    const combo = Math.max(0, Math.round(Number(S.view?.comboCount) || 0));
+    const comboTxt = combo >= 2 ? ` · CRACK ×${combo}` : '';
     const evLabel = evidence.map((t) => String(t)).join('+');
-    const sub = action ? `${evLabel || kind} × ${action.toUpperCase()}` : (CRACK_KIND_LABEL[kind] ?? kind);
-    await fx.bigText('CRACK!', sub, { tone: entry.critical ? 'red' : 'gold', holdMs: 1400 });
+    const sub = action
+      ? `${evLabel || kind} × ${action.toUpperCase()}${comboTxt}`
+      : `${CRACK_KIND_LABEL[kind] ?? kind}${comboTxt}`;
+    await fx.bigText('CRACK!', sub, { tone: entry.critical ? 'red' : 'gold', holdMs: CRACK_HOLD_MS });
   },
 
   /**
@@ -1304,6 +1540,7 @@ const EVENT_PLAYERS = {
    */
   async tell_window_open(ev) {
     syncTellToast(S.view ?? {});
+    syncOpening(S.view ?? {});   // v6：中央浮出 OPENING! 心理波动（strength 映射，无概率数字）
     sfx.tell();
     await fx.sleep(TELL_LIGHT_MS);
     if (ev && ev.id === undefined) console.warn('[事件] tell_window_open 缺少 id 字段', ev);
@@ -1556,7 +1793,7 @@ function maybeContextHints() {
 
 /* ============================================================ 新手引导 */
 
-const GUIDE_KEY = 'allin.guide.v5'; // v5 Tell Window 大改 → 重新弹一次
+const GUIDE_KEY = 'allin.guide.v6'; // v6 选择层/Hypothesis 大改 → 重新弹一次
 
 function guideSeen() {
   try {
@@ -1716,6 +1953,7 @@ function bindActions() {
   });
 
   D.btnRead.addEventListener('click', async () => {
+    if (D.btnRead.hidden || D.btnRead.disabled) return;   // 特殊位已被 GOTCHA 占据 / 层已开
     unlockAudio();
     S.polls = 0;
     clearPoll();
@@ -1761,13 +1999,14 @@ function bindKeyboard() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (S.guideOpen) closeGuide();
+      else closePick();   // v6：Esc 只收选择层（不发请求，焦点回到牌桌）
       return;
     }
     if (S.guideOpen) return; // 引导打开时屏蔽快捷键
     if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
     const t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-    if (!S.view || S.view.phase !== 'playing' || isBusy()) return;
+    if (!S.view || S.view.phase !== 'playing' || isBusy() || S.pick) return;
 
     const key = e.key.toLowerCase();
     if (key === 'f') {
@@ -1781,7 +2020,7 @@ function bindKeyboard() {
     } else if (key === 'a') {
       if (!D.btnAllin.hidden && !D.btnAllin.disabled) D.btnAllin.click();
     } else if (key === 'r') {
-      if (!D.btnRead.disabled) D.btnRead.click();
+      if (!D.btnRead.hidden && !D.btnRead.disabled) D.btnRead.click();
     } else if (key === 'g') {
       if (!D.btnGotcha.disabled) {
         e.preventDefault();
@@ -1865,6 +2104,21 @@ function bindDom() {
   D.allinLabel = $('#allin-label');
   D.btnRaise = $('#btn-raise');
   D.raiseTo = $('#raise-to');
+  D.cellRaise = $('#cell-raise');
+
+  D.hintFold = $('#hint-fold');
+  D.hintCallcheck = $('#hint-callcheck');
+  D.hintPressure = $('#hint-pressure');
+  D.hintHeavy = $('#hint-heavy');
+  D.hintAllin = $('#hint-allin');
+  D.hintRaise = $('#hint-raise');
+  D.hypoBar = $('#hypo-bar');
+  D.hypoText = $('#hypo-text');
+  D.openingNote = $('#opening-note');
+  D.openingStrength = $('#opening-strength');
+  D.specialSlot = $('#special-slot');
+  D.pickLayer = $('#pick-layer');
+  D.pickRows = $('#pick-rows');
 
   D.mentalHint = $('#mental-hint');
   D.btnRead = $('#btn-read');

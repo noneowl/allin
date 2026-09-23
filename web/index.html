@@ -81,6 +81,12 @@
           <div class="felt" id="felt">
             <div class="felt__watermark">TEXAS HOLD'EM · BOSS 战</div>
             <div class="felt__center">
+              <!-- v6 Opening 轻提示：开窗时浮出（strength → 微弱/明显/强烈，绝不显示概率） -->
+              <div class="opening" id="opening-note" hidden>
+                <span class="opening__kick">OPENING!</span>
+                <span class="opening__label">心理波动：</span>
+                <b class="opening__strength" id="opening-strength">明显</b>
+              </div>
               <div class="street" id="street-badge">翻牌前</div>
               <div class="card-row card-row--board" id="board"></div>
               <div class="pot" id="pot">
@@ -160,7 +166,7 @@
       </aside>
     </div>
 
-    <!-- ================================================ 行动栏 -->
+    <!-- ================================================ 行动栏（v6：READ/GOTCHA 收进主按钮行） -->
     <footer class="actionbar" id="actionbar">
       <div class="ab__status" id="ab-status">
         <span class="ab__dot" id="ab-dot"></span>
@@ -169,49 +175,88 @@
         <button class="ab__help" id="btn-newgame" type="button" title="重新开始（放弃当前牌局，回到 500/5000 开局）">⟲</button>
       </div>
 
-      <div class="ab__acts" id="ab-acts">
-        <button class="btn btn--lg btn--fold" id="btn-fold" type="button">弃牌 <kbd>F</kbd></button>
-        <button class="btn btn--lg btn--call" id="btn-callcheck" type="button"><span id="callcheck-label">过牌</span> <kbd>C</kbd></button>
-
-        <!-- NORMAL 专属 -->
-        <button class="btn btn--lg btn--pressure" id="btn-pressure" type="button" title="额外投入 0.5×当前底池（服务端算好加注到多少）">
-          <span class="ab__btn-main">PRESSURE <kbd>P</kbd></span>
-          <span class="ab__btn-sub">0.5 池 · 至 <b class="num" id="pressure-to">—</b></span>
-        </button>
-        <button class="btn btn--lg btn--heavy" id="btn-heavy" type="button" title="额外投入 1.0×当前底池">
-          <span class="ab__btn-main">HEAVY <kbd>H</kbd></span>
-          <span class="ab__btn-sub">1.0 池 · 至 <b class="num" id="heavy-to">—</b></span>
-        </button>
-        <button class="btn btn--lg btn--danger" id="btn-allin" type="button"><span id="allin-label">全下</span> <kbd>A</kbd></button>
-
-        <!-- GOTCHA 专属：阶梯 RAISE（金额全在 legal.gotchaRaiseTo，无任何数字输入） -->
-        <button class="btn btn--lg btn--ladder" id="btn-raise" type="button" hidden
-                title="按阶梯加注：当前注 + 阶梯（每次完整加注后阶梯翻倍）">
-          <span class="ab__btn-main">RAISE <kbd>↵</kbd></span>
-          <span class="ab__btn-sub">至 <b class="num" id="raise-to">—</b></span>
-        </button>
-      </div>
-
-      <!-- 特殊操作区：Tell Window 提示 + READ（FOCUS 限量 + 冷却环） + GOTCHA! -->
-      <div class="ab__special" id="ab-special">
-        <!-- v5 Tell Window 轻提示：Boss 行动后浮出，玩家行动即灭（以 view.tellWindow 为准，不阻塞队列） -->
-        <div class="tell-toast" id="tell-toast" hidden>
-          <span class="tell-toast__ico">🧠</span><span class="tell-toast__text" id="tell-toast-text">心理窗口</span>
+      <div class="ab__center">
+        <!-- v6 HYPOTHESIS 短横条：选中碎片生成（约 2s 或到下次行动即清，以 view.hypothesis 为准） -->
+        <div class="ab__hypo" id="hypo-bar" hidden>
+          <span class="ab__hypo-tag">HYPOTHESIS</span>
+          <b class="ab__hypo-text" id="hypo-text">—</b>
         </div>
-        <div class="mental-hint" id="mental-hint">Boss 行动 → 心理窗口 → READ/回应 → CRACK 推进状态 → 抓住 GOTCHA 窗口</div>
-        <div class="ab__special-row">
-          <button class="btn mental mental--read" id="btn-read" type="button" disabled
-                  title="READ 只在心理窗口内开放（他刚行动、还等你回应的一瞬）：消耗 1 点 FOCUS，读取一组碎片">
-            <span class="read-ring" id="read-ring"><span class="read-ring__core">READ</span></span>
-            <span class="read-cd num" id="read-cd">FOCUS 0/2</span>
-          </button>
 
-          <button class="btn gotcha__btn" id="btn-gotcha" type="button" disabled title="需要 Boss EXPOSED + 转/河 + 他刚高承诺行动">
-            <span id="gotcha-label">GOTCHA!</span> <kbd>G</kbd>
-          </button>
+        <div class="ab__acts" id="ab-acts">
+          <div class="ab__cell">
+            <button class="btn btn--lg btn--fold" id="btn-fold" type="button">弃牌 <kbd>F</kbd></button>
+            <span class="ab__btn-hint" id="hint-fold"></span>
+          </div>
+          <div class="ab__cell">
+            <button class="btn btn--lg btn--call" id="btn-callcheck" type="button"><span id="callcheck-label">过牌</span> <kbd>C</kbd></button>
+            <span class="ab__btn-hint" id="hint-callcheck"></span>
+          </div>
+
+          <!-- NORMAL 专属 -->
+          <div class="ab__cell">
+            <button class="btn btn--lg btn--pressure" id="btn-pressure" type="button" title="额外投入 0.5×当前底池（服务端算好加注到多少）">
+              <span class="ab__btn-main">PRESSURE <kbd>P</kbd></span>
+              <span class="ab__btn-sub">0.5 池 · 至 <b class="num" id="pressure-to">—</b></span>
+            </button>
+            <span class="ab__btn-hint" id="hint-pressure"></span>
+          </div>
+          <div class="ab__cell">
+            <button class="btn btn--lg btn--heavy" id="btn-heavy" type="button" title="额外投入 1.0×当前底池">
+              <span class="ab__btn-main">HEAVY <kbd>H</kbd></span>
+              <span class="ab__btn-sub">1.0 池 · 至 <b class="num" id="heavy-to">—</b></span>
+            </button>
+            <span class="ab__btn-hint" id="hint-heavy"></span>
+          </div>
+          <div class="ab__cell">
+            <button class="btn btn--lg btn--danger" id="btn-allin" type="button"><span id="allin-label">全下</span> <kbd>A</kbd></button>
+            <span class="ab__btn-hint" id="hint-allin"></span>
+          </div>
+
+          <!-- GOTCHA 专属：阶梯 RAISE（金额全在 legal.gotchaRaiseTo，无任何数字输入） -->
+          <div class="ab__cell" id="cell-raise" hidden>
+            <button class="btn btn--lg btn--ladder" id="btn-raise" type="button"
+                    title="按阶梯加注：当前注 + 阶梯（每次完整加注后阶梯翻倍）">
+              <span class="ab__btn-main">RAISE <kbd>↵</kbd></span>
+              <span class="ab__btn-sub">至 <b class="num" id="raise-to">—</b></span>
+            </button>
+            <span class="ab__btn-hint" id="hint-raise"></span>
+          </div>
+
+          <!-- 单一特殊位：平时 READ（FOCUS 限量 + 冷却环）；view.gotcha 点亮即同位置放大号 GOTCHA!；
+               GOTCHA 进行中显示「GOTCHA 中」不可点（零菜单，点了直接进现有流程） -->
+          <div class="ab__special-slot" id="special-slot" data-slot="read">
+            <button class="btn mental mental--read" id="btn-read" type="button" disabled
+                    title="READ 只在心理窗口内开放（他刚行动、还等你回应的一瞬）：消耗 1 点 FOCUS，读取一组碎片">
+              <span class="read-ring" id="read-ring"><span class="read-ring__core">READ</span></span>
+              <span class="read-cd num" id="read-cd">FOCUS 0/2</span>
+            </button>
+
+            <button class="btn gotcha__btn" id="btn-gotcha" type="button" hidden disabled title="需要 Boss EXPOSED + 转/河 + 他刚高承诺行动">
+              <span id="gotcha-label">GOTCHA!</span> <kbd>G</kbd>
+            </button>
+          </div>
+        </div>
+
+        <!-- v6 情境行：窗口轻提示（同排收纳，不再挂页面边角） + 一句话循环提示 -->
+        <div class="ab__legend">
+          <div class="tell-toast" id="tell-toast" hidden>
+            <span class="tell-toast__ico">🧠</span><span class="tell-toast__text" id="tell-toast-text">心理窗口</span>
+          </div>
+          <div class="mental-hint" id="mental-hint">Boss 行动 → 心理窗口 → READ/回应 → CRACK 推进状态 → 抓住 GOTCHA 窗口</div>
         </div>
       </div>
     </footer>
+  </div>
+
+  <!-- ============================================ v6 READ 即时选择层（桌面中央，临时不驻留） -->
+  <div class="pick" id="pick-layer" hidden>
+    <div class="pick__card">
+      <div class="pick__head">
+        <span class="pick__title">READ</span>
+        <span class="pick__sub">点一条钉住 · 其余即刻消失</span>
+      </div>
+      <div class="pick__rows" id="pick-rows"></div>
+    </div>
   </div>
 
   <!-- ================================================= 演出与浮层 -->
@@ -262,8 +307,10 @@
         <section class="guide__page">
           <h3>② Tell Window 与 Focus：一窗一批</h3>
           <ul>
-            <li>窗口开启时，READ 区浮出「<span class="hi">🧠 心理窗口 · 他刚 X</span>」提示 ——
-              这是<span class="hi">唯一</span>能按 READ 的时机；窗口一灭按钮立刻灰掉</li>
+            <li>READ 与 GOTCHA 共用底部行动栏的<span class="hi">同一个特殊位</span>：窗口开启时 READ
+              呼吸高亮、桌面中央浮出「<span class="hi">OPENING! 心理波动：微弱/明显/强烈</span>」——
+              点 READ，中央弹出 3–5 行大字<span class="hi">选择层</span>，点一条即钉住（其余即刻消失、层随即关闭，
+              其他行动按钮临时禁用）；窗口一灭该位置立刻灰掉</li>
             <li><span class="hi">Focus 取代每手 2 次</span>：翻前 <strong>0</strong>（不开放 READ）；
               每进 flop / turn / river <span class="hi">各 +1</span>，上限 <strong>2</strong>，
               没用完可以带到下一条街；每手牌从 0 重新开始</li>
@@ -294,8 +341,10 @@
           <h3>④ PIN × 行动 = CRACK：三态推进</h3>
           <ul>
             <li>三要件缺一不可：<span class="hi">PIN 住的真话</span> ×
-              <span class="hi">你做出的匹配行动</span> × <span class="hi">他当时的真实意图</span> ——
-              例：他「怕你继续加注」被你钉住 → 你真加注了 → CRACK!</li>
+              <span class="hi">你做出的匹配行动</span> × <span class="hi">他当时的真实意图</span>；
+              点选碎片的瞬间会生成 <span class="hi">HYPOTHESIS</span>（他希望你 FOLD / 他害怕 RAISE），
+              行动按钮下方的关系小字（顺从/挑战/施压…）只是这句话的翻译 ——
+              你一行动，假设与提示立即清空；CRACK 判定仍发生在回应落地那一刻</li>
             <li>每次 CRACK 都会紧接一条<span class="hi">状态推进横幅</span>：
               冷静😏 → 动摇😳 → 暴露😵；NOISE / DISTORTION 没有标签，钉错了永远验不出来</li>
             <li>他的状态直接改写下一轮：<strong>SHAKEN</strong> Tell 变多、更凶更爱演；

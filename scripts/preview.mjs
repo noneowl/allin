@@ -82,6 +82,46 @@ const LEAK_FLASH_K = 0.6;        // gotcha.flashScale
 const HEAVY_FRAC = 1.0;          // sizing.heavyFrac：put ≥ 1×池 → Tell 档位 heavy
 const DUEL_START_HAND = 7;       // 第 7 手起 Boss 进入「全下决胜」节奏（NORMAL 演示用）
 
+/* ---------------------------------------------- v6 增量契约（打补丁，不重排） */
+// §1 Opening 强度：开窗算一次，随窗口存续；wire = view.tellWindow.strength + tell_window_open.strength
+const OPENING = {
+  thresholds: { weak: 0.35, normal: 0.6 },
+  stateTierBonus: { CALM: 0, SHAKEN: 1, EXPOSED: 1 },   // SHAKEN/EXPOSED 抬一级
+  labels: { WEAK: '微弱', NORMAL: '明显', STRONG: '强烈' },
+};
+const TELL_TIER_SCORE = { check: 0, call: 0.2, fold: 0.2, bet: 0.3, raise: 0.5, heavy: 0.7, allin: 0.85 };
+const STREET_MOD_SCORE = { preflop: 0, flop: 0.05, turn: 0.15, river: 0.25 };
+const STATE_MOD_SCORE = { CALM: 0, SHAKEN: 0.1, EXPOSED: 0.2 };
+const STRENGTHS = ['WEAK', 'NORMAL', 'STRONG'];
+
+// §2 碎片 desire/fear（服务端私有，不进 wire）→ §3 PIN 后的 hypothesis
+const HYPOTHESIS_BY_TAG = {
+  wants_fold: { mode: 'want', action: 'FOLD' },
+  call_welcome: { mode: 'want', action: 'CALL' },
+  strong_hand: { mode: 'want', action: 'CALL' },
+  board_lock: { mode: 'want', action: 'CALL' },
+  trap: { mode: 'want', action: 'RAISE' },
+  overconfidence: { mode: 'want', action: 'RAISE' },
+  fear_call: { mode: 'fear', action: 'CALL' },
+  missed_board: { mode: 'fear', action: 'CALL' },
+  fear_raise: { mode: 'fear', action: 'RAISE' },
+  weak_hand: { mode: 'fear', action: 'RAISE' },
+  draw: { mode: 'fear', action: 'RAISE' },
+};
+
+// §6 CRACK 后紧跟的 Boss 受创台词（crack → talk → mental）
+const CRACK_REACT = ['……', '他真的跟了？', '你怎么看出来的？', '……这不对。'];
+
+/** 契约 §1：score → tierIdx（阈值）→ +stateTierBonus（封顶 2）→ strength。 */
+function computeStrength(tier, street, state) {
+  const score = (TELL_TIER_SCORE[tier] ?? 0)
+    + (STREET_MOD_SCORE[street] ?? 0)
+    + (STATE_MOD_SCORE[state] ?? 0);
+  let idx = score < OPENING.thresholds.weak ? 0 : score < OPENING.thresholds.normal ? 1 : 2;
+  idx = Math.min(2, idx + (OPENING.stateTierBonus[state] ?? 0));
+  return STRENGTHS[idx];
+}
+
 const FACES = {
   CALM: ['😏', '冷静'],
   SHAKEN: ['😳', '动摇'],
@@ -274,8 +314,10 @@ function baseView() {
       stateHint: STATE_HINT.CALM,
       lastAction: null, lastLine: null,
     },
-    tellWindow: null,        // { id, actionId, handId, street, bossAction } / null = 不可 READ
+    tellWindow: null,        // { id, actionId, handId, street, bossAction, strength } / null = 不可 READ
     pin: null,               // { text, verified } —— 只有这两个字段
+    hypothesis: null,        // v6 §3：{ mode:'want'|'fear', action } | null（PIN 生成，行动即清）
+    comboCount: 0,           // v6 §5：战斗级连击（CRACK +1 / 有窗口未中归 0 / newgame 归 0）
     gotcha: null,            // { street, bossAction } —— 非 null = 窗口点亮
     cracks: [],
     history: [],
@@ -470,12 +512,14 @@ function maybeOpenWindow(evs, tier) {
   if (state.phase !== 'playing' || state.mode === 'GOTCHA' || state.toAct !== 0) return null;
   if (!WINDOW_TIERS.has(tier)) return null;
   G.windowSeq += 1;
+  const strength = computeStrength(tier, state.street, state.boss.state); // v6 §1：开窗算一次
   const tw = {
     id: G.windowSeq,
     actionId: G.actionSeq,
     handId: state.handNo,
     street: state.street,
     bossAction: tier,
+    strength,                              // WEAK | NORMAL | STRONG
   };
   state.tellWindow = tw;
   G.curWindow = tw;
@@ -486,6 +530,7 @@ function maybeOpenWindow(evs, tier) {
     actionId: tw.actionId,
     street: tw.street,
     bossAction: tw.bossAction,
+    strength: tw.strength,                 // v6 §1 wire 增量
   });
   return tw;
 }
@@ -507,6 +552,7 @@ function closeWindowAndClear() {
   G.pendingCounter = null;
   state.readFragments = [];
   state.pin = null;
+  state.hypothesis = null;   // v6 §3：生命周期 = 窗口，玩家行动即清
   G.pin = null;
 }
 
@@ -713,6 +759,7 @@ function startHand(evs) {
   state.cracks = [];
   state.tellWindow = null;
   state.readFragments = [];
+  state.hypothesis = null;         // v6 §3：换手清空
   state.mode = 'NORMAL';
   state.pot = 0;
   state.toAct = 0;
@@ -993,6 +1040,8 @@ function evaluateCrack(evs, action) {
     critical: false,
     handNo: entry.handNo,
   });
+  // ★ v6 §6：CRACK 紧跟 Boss 受创台词，随后才是 mental 推进（顺序 crack → talk → mental）
+  pushTalk(evs, pick(CRACK_REACT));
   // ★ v5：CRACK 命中 → 立即推进 Boss 心理状态（随后无论如何都关窗清理）
   pushMental(evs, {
     cause: 'CRACK',
@@ -1328,6 +1377,7 @@ function onPlayerAction(action, amount) {
 
   const evs = [];
   const windowTier = state.tellWindow ? state.tellWindow.bossAction : null;
+  const hadWindow = Boolean(state.tellWindow);   // v6 §5 combo 判定：行动前是否存在 Opening
 
   seatAction(0, action, amount, evs);
   markAction(0, action);
@@ -1340,7 +1390,11 @@ function onPlayerAction(action, amount) {
   maybeBusted(evs, action);
 
   // ★ 玩家回应落地、窗口关闭之前：PIN 的真话 × 行动 × 当前 intent → CRACK + 心理推进
-  evaluateCrack(evs, action);
+  const cracked = evaluateCrack(evs, action);
+
+  // ★ v6 §5 combo：CRACK 成功 +1；有窗口未命中归 0；无窗口的行动不计入（newgame 归 0）
+  if (cracked) state.comboCount = Math.max(0, Math.round(Number(state.comboCount) || 0)) + 1;
+  else if (hadWindow) state.comboCount = 0;
 
   // ★ Boss 反读：回应踩中窗口陷阱 → PLAYER CRACKED + 玩家心理推进（随后清空陷阱）
   evaluatePlayerCounter(evs, action);
@@ -1422,6 +1476,8 @@ function onPin(fragmentId) {
     verified: false,
   };
   state.pin = { text: meta.text, verified: false }; // wire：只有 text + verified
+  // ★ v6 §3：PIN 即判断 —— 从碎片 desire/fear 推导 hypothesis（噪音/DISTORTION → null）
+  state.hypothesis = HYPOTHESIS_BY_TAG[meta.tags?.[0] ?? ''] ?? null;
   feedOf('pin', `📌 ${meta.text}`);
   return succeed([]);
 }
@@ -1693,6 +1749,14 @@ function newCoverage() {
     focusReset: false,
     focusCap: false,
     cracks: 0,
+    /* ---- v6 增量覆盖（追加，不改原有口径） ---- */
+    strengths: new Set(),     // Opening strength 三档 WEAK/NORMAL/STRONG
+    hypoWant: false,          // PIN 真话 → hypothesis {want,...} 生成
+    hypoNoiseNull: false,     // PIN 噪音 → hypothesis 仍为 null
+    hypoCleared: false,       // 玩家行动 → hypothesis 清空
+    comboUp: false,           // CRACK → comboCount 递增（镜像断言通过）
+    comboReset: false,        // 有窗口未命中 → comboCount 归 0（从 >0 归 0）
+    crackTalk: false,         // crack 紧跟 Boss 受创 talk
   };
 }
 
@@ -1721,6 +1785,14 @@ function coverageMissing(cov) {
   if (!cov.focusCap) miss.push('Focus:上限2');
   if (cov.cracks < 1) miss.push('事件:crack');
   if (cov.windowClosed < 1) miss.push('碎片:行动后清空');
+  /* ---- v6 增量断言（追加） ---- */
+  for (const s of STRENGTHS) if (!cov.strengths.has(s)) miss.push(`Opening强度:${s}`);
+  if (!cov.hypoWant) miss.push('hypothesis:真话生成');
+  if (!cov.hypoNoiseNull) miss.push('hypothesis:噪音为null');
+  if (!cov.hypoCleared) miss.push('hypothesis:行动清空');
+  if (!cov.comboUp) miss.push('combo:递增');
+  if (!cov.comboReset) miss.push('combo:清零');
+  if (!cov.crackTalk) miss.push('crack:受创talk紧跟');
   return miss;
 }
 
@@ -1736,6 +1808,9 @@ function observeView(v, cov, ctx, tag) {
     assert(WINDOW_TIERS.has(v.tellWindow.bossAction), `${tag} 窗口档位=${v.tellWindow.bossAction}`);
     assert(Number(v.tellWindow.handId) === Number(v.handNo), `${tag} 窗口 handId 对齐`);
     assert(v.tellWindow.street === v.street, `${tag} 窗口 street 对齐`);
+    assert(STRENGTHS.includes(v.tellWindow.strength),
+      `${tag} v6 窗口 strength ∈ WEAK/NORMAL/STRONG：${v.tellWindow.strength}`);
+    cov.strengths.add(v.tellWindow.strength);
   }
   // 2) GOTCHA 窗口恒等式（资格×时机；正反例都由它兜底）
   assert(Boolean(v.gotcha) === expectedGotcha(v),
@@ -1776,6 +1851,17 @@ function observeView(v, cov, ctx, tag) {
   assert(['CALM', 'SHAKEN', 'EXPOSED'].includes(v.boss.state), `${tag} boss.state=${v.boss.state}`);
   assert(['CALM', 'SHAKEN', 'EXPOSED'].includes(v.player.state), `${tag} player.state=${v.player.state}`);
 
+  /* ---- v6 增量不变式（追加）：hypothesis 形状 / comboCount 取值 ---- */
+  if (v.hypothesis !== null) {
+    assert(v.hypothesis && (v.hypothesis.mode === 'want' || v.hypothesis.mode === 'fear')
+      && ['FOLD', 'CALL', 'RAISE', 'CHECK'].includes(v.hypothesis.action),
+    `${tag} hypothesis 形状=${JSON.stringify(v.hypothesis)}`);
+    assert(v.pin && v.pin.text, `${tag} hypothesis 存在时必须已 PIN`);
+    assert(v.tellWindow, `${tag} hypothesis 生命周期 = 窗口`);
+  }
+  assert(Number.isInteger(v.comboCount) && v.comboCount >= 0,
+    `${tag} comboCount 为非负整数：${v.comboCount}`);
+
   cov.bossStates.add(v.boss.state);
   cov.playerStates.add(v.player.state);
 }
@@ -1790,6 +1876,11 @@ function observeEvents(evs, v, cov, ctx) {
         assert(ev.id >= ctx.prevWinId, '窗口事件 id 递增');
         ctx.prevWinId = Math.max(ctx.prevWinId, ev.id);
         assert(ev.actionId != null && ev.street, 'tell_window_open 字段齐全');
+        // v6 §1：事件 strength 与 view.tellWindow.strength 必须同源
+        assert(STRENGTHS.includes(ev.strength), `v6 窗口事件 strength=${ev.strength}`);
+        assert(v.tellWindow && ev.strength === v.tellWindow.strength,
+          `v6 strength 事件/view 对齐：${ev.strength} vs ${v.tellWindow && v.tellWindow.strength}`);
+        cov.strengths.add(ev.strength);
         break;
       }
       case 'read_batch': {
@@ -1816,6 +1907,12 @@ function observeEvents(evs, v, cov, ctx) {
       case 'crack': {
         cov.cracks += 1;
         assert(ev.evidence && ev.action, 'crack 事件字段');
+        // v6 §6：crack 紧跟 Boss 受创台词（顺序 crack → talk → mental）
+        const idx = evs.indexOf(ev);
+        const nxt = evs[idx + 1];
+        assert(nxt && nxt.type === 'talk' && typeof nxt.line === 'string' && nxt.line,
+          `v6 crack 后必须紧跟受创 talk：${evs.map((e) => e.type).join(',')}`);
+        cov.crackTalk = true;
         break;
       }
       case 'mental': {
@@ -1904,6 +2001,8 @@ async function runRound(base, roundNo) {
       ctx.lastHandEnd = null;
       ctx.prevWinId = 0;              // 服务端 windowSeq 每局归零
       assert(Math.round(r.body.view.player.focus) === 0, 'newgame 后 focus=0');
+      assert(r.body.view.comboCount === 0, 'newgame 后 comboCount=0（战斗级归 0）');
+      assert(r.body.view.hypothesis === null, 'newgame 后 hypothesis=null');
       return r.body;
     },
   };
@@ -2107,6 +2206,34 @@ async function runRound(base, roundNo) {
           assert(rp.status === 200, `${tag} PIN → ${JSON.stringify(rp.body)}`);
           v = rp.body.view;
           assert(v.pin && v.pin.text === f0.text, `${tag} view.pin 对齐 frag0`);
+
+          /* ---- v6 §3 增量：选碎片 → hypothesis 生成（canCall ⇒ wants_fold ⇒ want FOLD） ---- */
+          const canCallPre = Math.max(0, Math.round(v.boss.bet - v.player.bet)) > 0;
+          assert(v.hypothesis && v.hypothesis.mode === 'want',
+            `${tag} PIN 真话 → hypothesis 生成：${JSON.stringify(v.hypothesis)}`);
+          assert(v.hypothesis.action === (canCallPre ? 'FOLD' : 'RAISE'),
+            `${tag} hypothesis 动作对齐碎片 desire：expect=${canCallPre ? 'FOLD' : 'RAISE'}`
+            + ` actual=${v.hypothesis.action}`);
+          cov.hypoWant = true;
+
+          /* ---- v6 §3 增量：噪音碎片（frag1 恒 NOISE）→ hypothesis 仍为 null ---- */
+          const f1 = v.readFragments[1];
+          assert(f1 && f1.id, `${tag} READ 后必须有第二条碎片（噪音对照组）`);
+          const rp1 = await json('POST', `${base}/api/pin`, { fragmentId: f1.id });
+          assert(rp1.status === 200, `${tag} PIN 噪音 → ${JSON.stringify(rp1.body)}`);
+          assert(rp1.body.view.hypothesis === null,
+            `${tag} 噪音 PIN → hypothesis 必须为 null：${JSON.stringify(rp1.body.view.hypothesis)}`);
+          cov.hypoNoiseNull = true;
+
+          /* ---- 恢复 PIN frag0（后续 CRACK 断言仍要求 TRUE 在槽） ---- */
+          const rp2 = await json('POST', `${base}/api/pin`, { fragmentId: f0.id });
+          assert(rp2.status === 200 && rp2.body.view.pin && rp2.body.view.pin.text === f0.text,
+            `${tag} 恢复 PIN frag0 → ${JSON.stringify(rp2.body && rp2.body.view.pin)}`);
+          assert(rp2.body.view.hypothesis && rp2.body.view.hypothesis.action
+            === (canCallPre ? 'FOLD' : 'RAISE'),
+          `${tag} 恢复 PIN → hypothesis 回到 want`);
+          v = rp2.body.view;
+
           ctx.pinFor = String(f0.id);
           ctx.pinWindow = String(f0.tellWindowId);
           ctx.staleId = String(f0.id);   // 关窗后留作跨窗口 BAD_FRAGMENT 断言
@@ -2150,6 +2277,8 @@ async function runRound(base, roundNo) {
     const prevState = v.boss.state;
     const prevWindowId = tw ? tw.id : 0;
     const pinned = pinnedHere ? String(ctx.pinFor) : null;
+    const prevCombo = Math.round(v.comboCount);   // v6 §5 combo 镜像基线
+    const hadWindow = Boolean(tw);                // 行动前是否存在 Opening
 
     const r = await json('POST', `${base}/api/action`, { action });
     assert(r.status === 200, `${tag} action ${action} → ${JSON.stringify(r.body)}`);
@@ -2164,6 +2293,17 @@ async function runRound(base, roundNo) {
       assert(!nv.tellWindow || nv.tellWindow.id > prevWindowId,
         `${tag} 旧窗口必须关闭（新窗口 id 更大）`);
       cov.windowClosed += 1;
+
+      /* ---- v6 增量：行动即结算（hypothesis 清空）+ combo 递增/清零镜像 ---- */
+      assert(nv.hypothesis === null, `${tag} 行动后 hypothesis 必须清空：${JSON.stringify(nv.hypothesis)}`);
+      cov.hypoCleared = true;
+      const crackedNow = evs.some((e) => e && e.type === 'crack');
+      const expectedCombo = crackedNow ? prevCombo + 1 : (hadWindow ? 0 : prevCombo);
+      assert(Math.round(nv.comboCount) === expectedCombo,
+        `${tag} combo 镜像：expect=${expectedCombo} actual=${nv.comboCount}`
+        + ` crack=${crackedNow} hadWindow=${hadWindow} prev=${prevCombo}`);
+      if (crackedNow) cov.comboUp = true;
+      if (!crackedNow && hadWindow && prevCombo > 0) cov.comboReset = true;
     }
 
     /* ---------- 反读断言：匹配窗口陷阱的行动必须踩中 ---------- */

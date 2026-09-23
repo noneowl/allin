@@ -1393,23 +1393,125 @@ kbd {
 }
 
 /* 特殊操作区：READ（限量 + 冷却转圈） + GOTCHA!（解锁点亮 / 进行中常亮） */
-.ab__special {
-  position: relative;
-  flex: 0 0 auto;
+/* v6 行动栏中列：HYPOTHESIS 横条 + 主按钮行 + 情境行（全部收在底部一屏内） */
+.ab__center {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
-  gap: 5px;
-  padding-left: 14px;
+  gap: 4px;
+}
+
+.ab__cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+/* v6 按钮关系小字（契约 §4 文案；hypothesis 为 null 时为空 = 不显示） */
+.ab__btn-hint {
+  min-height: 13px;
+  font-size: 10.5px;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  color: var(--gold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  transition: color 0.2s var(--ease), opacity 0.2s var(--ease);
+}
+
+.ab__btn-hint:empty {
+  opacity: 0;
+}
+
+/* v6 HYPOTHESIS 短横条：选中即显，约 2s / 行动即清 */
+.ab__hypo {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 100%;
+  padding: 4px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--text-0);
+  background: linear-gradient(180deg, rgba(232, 200, 106, 0.18), rgba(232, 200, 106, 0.07));
+  border: 1px solid rgba(232, 200, 106, 0.55);
+  box-shadow: 0 0 18px rgba(232, 200, 106, 0.22);
+  white-space: nowrap;
+}
+
+.ab__hypo-tag {
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  color: var(--gold);
+}
+
+.ab__hypo-text {
+  font-weight: 800;
+}
+
+.ab__hypo.is-new {
+  animation: hypoIn 0.3s var(--ease-out);
+}
+
+@keyframes hypoIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 情境行：窗口轻提示 + 循环一句话（同排收纳） */
+.ab__legend {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 单一特殊位：READ / GOTCHA 同位置互换（视线不离主按钮行） */
+.ab__special-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 118px;
+  padding-left: 10px;
   border-left: 1px dashed var(--line-strong);
 }
 
-.ab__special-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
+.ab__special-slot[data-slot="gotcha"] {
+  border-left-color: rgba(255, 90, 110, 0.6);
 }
+
+/* v6 GOTCHA 高潮位：同一位置放大号 + 沿用红金警戒（视觉全场最强） */
+.ab__special-slot[data-slot="gotcha"] .gotcha__btn {
+  padding: 13px 22px;
+  font-size: 19px;
+  letter-spacing: 2px;
+  transform: scale(1.06);
+  box-shadow: 0 0 26px rgba(255, 77, 106, 0.6), 0 0 12px rgba(232, 200, 106, 0.5);
+}
+
+.ab__special-slot .mental--read {
+  width: 100%;
+  justify-content: center;
+}
+
 
 .mental-hint {
   max-width: 320px;
@@ -2180,4 +2282,124 @@ body.hitstop *::after {
 .guide__btns {
   display: flex;
   gap: 8px;
+}
+
+/* ================================================================ v6 战斗节奏层 */
+/* Opening 中央轻提示：开窗浮出（strength → 微弱/明显/强烈），关窗即灭；不显示任何概率 */
+.opening {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 18px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #cfe6ff;
+  background: rgba(90, 169, 255, 0.12);
+  border: 1px solid rgba(90, 169, 255, 0.6);
+  box-shadow: 0 0 20px rgba(90, 169, 255, 0.35);
+}
+
+.opening__kick {
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  color: var(--gold);
+}
+
+.opening__label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.opening__strength {
+  font-size: 16px;
+  color: #a8d3ff;
+  text-shadow: 0 0 12px rgba(90, 169, 255, 0.55);
+}
+
+.opening.is-new {
+  animation: tellIn 0.34s var(--ease-out);
+}
+
+/* READ 即时选择层：桌面中央临时层 —— 大字、同款样式同款可信度、无任何真假暗示 */
+.pick {
+  position: fixed;
+  inset: 0;
+  z-index: 66;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(4, 7, 6, 0.45);
+  animation: fadeIn 0.18s var(--ease);
+}
+
+.pick__card {
+  width: min(620px, 94vw);
+  max-height: 82vh;
+  overflow: auto;
+  padding: 18px 22px 20px;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(90, 169, 255, 0.55);
+  background: linear-gradient(165deg, rgba(16, 24, 22, 0.98), rgba(7, 10, 9, 0.985));
+  box-shadow: var(--shadow-3), 0 0 46px rgba(90, 169, 255, 0.28);
+  animation: popIn 0.22s var(--ease-out);
+}
+
+.pick__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.pick__title {
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: 0.3em;
+  color: var(--gold);
+}
+
+.pick__sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.pick__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* 单行 2–10 字大字；所有行完全同款样式（绝不按真假分色/分亮度） */
+.pick__row {
+  width: 100%;
+  padding: 13px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(90, 169, 255, 0.5);
+  background: rgba(90, 169, 255, 0.1);
+  color: var(--text-0);
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.45;
+  letter-spacing: 0.05em;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s var(--ease), background 0.14s var(--ease), transform 0.14s var(--ease);
+  animation: riseIn 0.22s var(--ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 55ms);
+}
+
+.pick__row:hover,
+.pick__row:focus-visible {
+  border-color: var(--gold);
+  background: rgba(232, 200, 106, 0.16);
+  transform: translateX(4px);
+}
+
+/* v6：按钮现在包在 .ab__cell 里（下方带关系小字）——居中规则跟随新结构 */
+.ab__cell > .btn {
+  position: relative;
+  justify-content: center;
 }
