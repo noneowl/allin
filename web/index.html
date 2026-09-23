@@ -69,10 +69,10 @@
               <div class="hud__stat" title="当前盲注级别"><i>盲注</i><b class="num" id="hud-blind">—</b></div>
               <div class="hud__stat" title="下次盲注升级"><i>下次升级</i><b id="hud-blind-next">—</b></div>
               <div class="hud__mode" id="hud-mode" data-mode="NORMAL" title="NORMAL 正常对抗 / GOTCHA 负债决胜">NORMAL</div>
-              <div class="hud__mood" id="hud-mood" title="Boss 三状态情绪">
+              <div class="hud__mood" id="hud-mood" title="Boss 三状态心理（冷静 → 动摇 → 暴露）">
                 <span data-state="CALM">😏 冷静</span>
                 <span data-state="SHAKEN">😳 动摇</span>
-                <span data-state="TILT">😡 上头</span>
+                <span data-state="EXPOSED">😵 暴露</span>
               </div>
             </div>
             <div class="state-hint" id="state-hint" title="">—</div>
@@ -92,13 +92,15 @@
         </section>
 
         <!-- ================================================ 玩家区域 -->
-        <section class="zone zone--player" id="player-zone">
+        <section class="zone zone--player" id="player-zone" data-state="CALM">
           <div class="player" id="player">
             <div class="player__meta">
               <div class="player__title">
                 你
                 <span class="dealer-btn" id="player-dealer" hidden title="庄家">D</span>
                 <span class="betflag" id="player-bet" hidden><i>△</i><span class="num">0</span></span>
+                <!-- v5 玩家心理状态格（view.player.state/face/mood，只展示暂不参与判定） -->
+                <span class="pill player__mood" id="player-mood" data-state="CALM" title="你的心理状态">😏 冷静</span>
               </div>
               <div class="pill player__tocall" id="player-tocall" hidden></div>
             </div>
@@ -189,16 +191,21 @@
         </button>
       </div>
 
-      <!-- 特殊操作区：READ（限量 2/2 + 冷却环） + GOTCHA! -->
+      <!-- 特殊操作区：Tell Window 提示 + READ（FOCUS 限量 + 冷却环） + GOTCHA! -->
       <div class="ab__special" id="ab-special">
-        <div class="mental-hint" id="mental-hint">PIN 真话 → 正确行动 → CRACK ×2 → GOTCHA 负债决胜</div>
+        <!-- v5 Tell Window 轻提示：Boss 行动后浮出，玩家行动即灭（以 view.tellWindow 为准，不阻塞队列） -->
+        <div class="tell-toast" id="tell-toast" hidden>
+          <span class="tell-toast__ico">🧠</span><span class="tell-toast__text" id="tell-toast-text">心理窗口</span>
+        </div>
+        <div class="mental-hint" id="mental-hint">Boss 行动 → 心理窗口 → READ/回应 → CRACK 推进状态 → 抓住 GOTCHA 窗口</div>
         <div class="ab__special-row">
-          <button class="btn mental mental--read" id="btn-read" type="button" title="读取一组碎片（每手限量、冷却极短）">
+          <button class="btn mental mental--read" id="btn-read" type="button" disabled
+                  title="READ 只在心理窗口内开放（他刚行动、还等你回应的一瞬）：消耗 1 点 FOCUS，读取一组碎片">
             <span class="read-ring" id="read-ring"><span class="read-ring__core">READ</span></span>
-            <span class="read-cd num" id="read-cd">2/2</span>
+            <span class="read-cd num" id="read-cd">FOCUS 0/2</span>
           </button>
 
-          <button class="btn gotcha__btn" id="btn-gotcha" type="button" disabled title="本手 CRACK 达标后解锁">
+          <button class="btn gotcha__btn" id="btn-gotcha" type="button" disabled title="需要 Boss EXPOSED + 转/河 + 他刚高承诺行动">
             <span id="gotcha-label">GOTCHA!</span> <kbd>G</kbd>
           </button>
         </div>
@@ -221,7 +228,7 @@
 
   <div class="toasts" id="toasts"></div>
 
-  <!-- ==================================================== 新手引导（v4 · 6 页） -->
+  <!-- ==================================================== 新手引导（v5 · 6 页） -->
   <div class="guide" id="guide" hidden>
     <div class="guide__card" role="dialog" aria-modal="true" aria-label="新手引导">
       <div class="guide__head">
@@ -231,91 +238,107 @@
 
       <div class="guide__body" id="guide-body">
 
-        <!-- ① READ 限量 -->
+        <!-- ① 基础循环图 -->
         <section class="guide__page">
-          <h3>① READ：每手限量，一次读一组</h3>
+          <h3>① 基础循环：心理窗口就是他的破绽</h3>
+          <div class="guide__loop">
+            Boss 行动 → 🧠 Tell Window 开启 → READ（耗 Focus）/ 直接回应 →
+            PIN × 正确行动 = CRACK → Boss 心理状态推进 →
+            状态改写下一轮下注权重与 Tell 质量 → 他 EXPOSED + 转/河高承诺 = GOTCHA 窗口
+          </div>
           <ul>
-            <li>READ 按钮显示 <span class="hi">2/2</span> —— 每手只有 2 次，用完变 0/2 灰掉，
-              下一手重新填满；按钮外圈是<span class="hi">冷却转圈</span>（冷却极短）</li>
-            <li>一次 READ 返回<span class="hi">一组 3–5 条碎片</span>：Boss 头旁成组闪现、逐行错开，
-              0.5–1.5 秒后淡出（他越冷静闪得越久），同时全部进入右侧 READ Fragments 面板</li>
-            <li>碎片混着<strong>真心话、无关杂念、他自己的错觉</strong>，<span class="hi">绝不标类型</span> ——
-              只能拿牌面、注码、行动交叉验证</li>
-            <li>只有你的回合才能 READ —— 次数宝贵，想好再读</li>
+            <li>READ 不再是随时能点的按钮 —— 只在他<span class="hi">刚做完行动、还等你回应</span>的那一瞬开放；
+              你自己的任何成功行动都会让窗口即刻关闭</li>
+            <li>CRACK 判定发生在你回应落地的那一刻：命中 → 白闪大字 +
+              <span class="hi">CALM → SHAKEN → EXPOSED</span> 状态横幅（双方对称，同样会被打崩）</li>
+            <li>心理与筹码<span class="hi">彻底分离</span>：赢底池、输底池都不动情绪 ——
+              只有「被看穿」（CRACK / 被拖进 GOTCHA）才会推进状态</li>
+            <li>状态跨手持续：你把他打到 EXPOSED，他就带着破绽打到下一手里</li>
           </ul>
         </section>
 
-        <!-- ② PIN -->
+        <!-- ② Tell Window 与 Focus -->
         <section class="guide__page">
-          <h3>② PIN：把一条情报钉进 Known</h3>
+          <h3>② Tell Window 与 Focus：一窗一批</h3>
           <ul>
-            <li>带 <span class="hi">📌</span> 的碎片行（本手工 READ 出的）可以 PIN ——
-              点一下就钉进 READ Fragments 顶部的 <span class="hi">Known 卡片</span></li>
-            <li><strong>单槽位</strong>：新 PIN 覆盖旧 PIN，一手只能记住一条</li>
-            <li>被验证后 Known 卡打 <span class="hi">✓</span>，被 PIN 的行高亮 ——
-              这条情报已经被你在牌桌上兑现过</li>
-            <li>GOTCHA 阶段 Boss 主动泄漏的碎片<span class="hi">没有 id、不能 PIN</span> ——
-              只能看，来不及钉</li>
+            <li>窗口开启时，READ 区浮出「<span class="hi">🧠 心理窗口 · 他刚 X</span>」提示 ——
+              这是<span class="hi">唯一</span>能按 READ 的时机；窗口一灭按钮立刻灰掉</li>
+            <li><span class="hi">Focus 取代每手 2 次</span>：翻前 <strong>0</strong>（不开放 READ）；
+              每进 flop / turn / river <span class="hi">各 +1</span>，上限 <strong>2</strong>，
+              没用完可以带到下一条街；每手牌从 0 重新开始</li>
+            <li>按钮显示 <span class="hi">FOCUS 1/2</span>：每按一次 READ 消耗 1 点，
+              耗尽即禁用；读完仍有极短的<span class="hi">冷却转圈</span></li>
+            <li><span class="hi">一窗一批</span>：一批碎片只属于当前这个窗口 ——
+              你一做出回应（无论 CRACK 成没成），服务端无条件清空碎片与 PIN，
+              旧窗口的 📌 不能再钉到新窗口上</li>
           </ul>
         </section>
 
-        <!-- ③ 新 CRACK -->
+        <!-- ③ 碎片质量 -->
         <section class="guide__page">
-          <h3>③ 新 CRACK = 情报 × 行动</h3>
+          <h3>③ 碎片质量：他刚做什么 × 第几条街 × 他什么状态</h3>
           <ul>
-            <li>不再是碎片拼语义 —— CRACK 的公式是：
-              <span class="hi">PIN 住的真话 × 你做出的正确行动 × Boss 当时的真实意图</span></li>
-            <li>例：他「怕你继续加注」（fear_raise）被你 PIN 住 → 你真的加注了 →
-              屏幕白闪震屏，大字副标 <strong>fear_raise × RAISE</strong></li>
-            <li>NOISE / DISTORTION 天然没有标签 —— <span class="hi">PIN 错了永远验证不出来</span>，
-              只会白占你的槽位</li>
-            <li>Boss 再次进攻后意图会变，旧情报自然作废；同一 PIN 验证过一次就不再重复生效</li>
-            <li>本手攒够 <strong>N 个 CRACK</strong>（默认 2）→ GOTCHA 解锁点亮</li>
+            <li>真话浓度是公式化的：<span class="hi">他刚做的行动越重</span>（check &lt; bet &lt; call &lt; raise &lt; heavy &lt; allin）、
+              <span class="hi">街段越靠后</span>（flop &lt; turn &lt; river）、
+              <span class="hi">他心理越崩</span>（CALM &lt; SHAKEN &lt; EXPOSED），真话占比越高</li>
+            <li>翻前与 CALM 的 check 窗口 = 最难读的一手；河牌 + EXPOSED 的重注窗口 = 一眼看穿</li>
+            <li>三类信息永远混在一起、<span class="hi">绝不标类型</span>：真心话、无关杂念、他自己的错觉</li>
+            <li>交叉验证三件套：<strong>行动史</strong>（他刚 X）＋ <strong>牌面与街段</strong>（公共牌支持吗）＋
+              <strong>心理状态与 stateHint</strong>（他现在漏真话还是在演）</li>
           </ul>
         </section>
 
-        <!-- ④ GOTCHA 负债下注 -->
+        <!-- ④ PIN × 行动 = CRACK + 三态推进 -->
         <section class="guide__page">
-          <h3>④ GOTCHA：押上一切的负债决胜</h3>
+          <h3>④ PIN × 行动 = CRACK：三态推进</h3>
           <ul>
-            <li>点 <span class="hi">GOTCHA!</span>（无任何二选一）→ 全屏宣告、屏幕进入
-              <strong>红金警戒态</strong>，双方解除筹码上限</li>
-            <li><span class="hi">可以负债</span>：投入不再受剩余筹码限制，筹码堆会回缩到 0、
-              数字变红（如 <strong>-200</strong>）—— 欠的债就是你的新生命值</li>
-            <li>行动只剩 <strong>FOLD | CALL/CHECK | RAISE</strong>：
-              没有任何数字输入，金额全部由服务端按阶梯给出</li>
-            <li>任意一方 CALL / RAISE 都会触发 <span class="hi">心理泄漏</span>：
-              更快更密的金色碎片（4–6 条、带 depth 角标），<strong>越深越真</strong></li>
-            <li>READ 在 GOTCHA 中禁用（显示 <strong>READ —</strong>）—— 情报只从泄漏里来</li>
+            <li>三要件缺一不可：<span class="hi">PIN 住的真话</span> ×
+              <span class="hi">你做出的匹配行动</span> × <span class="hi">他当时的真实意图</span> ——
+              例：他「怕你继续加注」被你钉住 → 你真加注了 → CRACK!</li>
+            <li>每次 CRACK 都会紧接一条<span class="hi">状态推进横幅</span>：
+              冷静😏 → 动摇😳 → 暴露😵；NOISE / DISTORTION 没有标签，钉错了永远验不出来</li>
+            <li>他的状态直接改写下一轮：<strong>SHAKEN</strong> Tell 变多、更凶更爱演；
+              <strong>EXPOSED</strong> Tell 最浓、打法明显失控，并<span class="hi">获得 GOTCHA 资格</span></li>
+            <li>你被他 CRACK 也一样掉状态格（HUD「你」旁的脸会变）—— 心理是双向的</li>
           </ul>
         </section>
 
-        <!-- ⑤ 阶梯翻倍 -->
+        <!-- ⑤ Boss 反读 -->
         <section class="guide__page">
-          <h3>⑤ 阶梯：每一次加注，风险翻倍</h3>
-          <table class="guide__map">
-            <tr><td>RAISE 至 N</td><td>金额 = 当前注 + 阶梯（按钮上直接写着「至 N」，回车即出）</td></tr>
-            <tr><td>阶梯起点</td><td>进入 GOTCHA 时 = 本街上次加注尺寸（至少一个大盲）</td></tr>
-            <tr><td>阶梯翻倍</td><td>任意一方完成一次完整加注 → 阶梯 ×2：100 → 200 → 400 → 800 …</td></tr>
-          </table>
+          <h3>⑤ Boss 反读：PLAYER CRACKED</h3>
           <ul>
-            <li>每多僵持一轮，底下的债就翻一倍 —— <span class="hi">要么快刀 CALL 结束对轰，要么继续加注压死他</span></li>
-            <li>Effective Stack 在这里只是参考：NORMAL 的安全上限已经<span class="hi">解除</span></li>
+            <li>Boss 也在数你的习惯。三个<span class="hi">明显模式</span>：
+              <strong>别连续被重注打跑</strong>（面对重注 fold 次数攒够 → 他推重注等你跑）；
+              <strong>别什么都接</strong>（跟注次数攒够 → 他加注等你接）；
+              <strong>输急眼别乱开火</strong>（当激进方输牌攒够 → 他让牌等你开火）</li>
+            <li>模式成立 + 他当次行动布下陷阱 → 你的回应一踩中，红色
+              <span class="hi">PLAYER CRACKED</span> 大字砸脸 + 停顿，Battle Log 记下
+              「他在利用你：{为什么}」—— 他也在看你</li>
+            <li>同时你的心理状态格被推进一档（冷静 → 动摇 → 暴露），
+              Boss 的台词与下注会更放肆</li>
+            <li>破解：换窗口换打法 —— 你不按老路走，陷阱就作废，他会重新评估</li>
           </ul>
         </section>
 
-        <!-- ⑥ 统一结算与负数判负 -->
+        <!-- ⑥ GOTCHA 负债下注与结算 -->
         <section class="guide__page">
-          <h3>⑥ 统一结算：欠债也一起算</h3>
+          <h3>⑥ GOTCHA：资格 × 时机的负债决胜</h3>
           <ul>
-            <li>GOTCHA 只有 <strong>FOLD 或摊牌</strong>才会结束，随后统一结算：
-              退还未跟部分 → Pot 归拢全部投入（<strong>含负债投入</strong>）→ 赢家连本带债一起收</li>
-            <li>债务被 Pot 覆盖：赢了就一笔勾销，<span class="hi">输了就是终局</span> ——
-              结算后筹码 ≤ 0 立即判负，<strong>绝不允许负数筹码进入下一手</strong></li>
-            <li>盲注照旧按手数<span class="hi">阶梯升级</span>，不动手也会被磨死；
-              把 Boss 的筹码打到 0 = <span class="hi">VICTORY</span>，你的归零 = DEFEAT</li>
+            <li>点亮条件<span class="hi">缺一不可</span>：他是 <strong>EXPOSED</strong>（资格）＋
+              <strong>转牌/河牌</strong>（高承诺街段）＋ 他<span class="hi">刚做过 bet / raise / allin</span>（同一条街）＋
+              轮到你的回合 —— 按钮亮了才能按</li>
+            <li>点 <span class="hi">GOTCHA!</span> → 全屏宣告、屏幕进入<strong>红金警戒态</strong>，
+              双方解除筹码上限，<span class="hi">可以负债</span>（筹码堆回缩到 0、数字变红如 -200）</li>
+            <li>行动只剩 <strong>FOLD | CALL/CHECK | RAISE</strong>：金额全由服务端按阶梯给出，
+              每完成一次完整加注 <span class="hi">阶梯 ×2</span>：100 → 200 → 400 …
+              要么快刀 CALL 结束对轰，要么继续加注压死他</li>
+            <li>任意一方 CALL / RAISE 触发<span class="hi">心理泄漏</span>：
+              更快更密的金色碎片（4–6 条、带 depth 角标），<strong>越深越真</strong>；READ 在负债阶段禁用</li>
+            <li>统一结算：退未跟部分 → Pot 归拢<strong>含负债投入</strong> → 赢家连本带债一起收；
+              结算后筹码 ≤ 0 立即判负，<span class="hi">绝不允许负数进入下一手</span>；
+              盲注照旧按手数阶梯升级，Boss 归零 = VICTORY</li>
           </ul>
-          <div class="guide__loop">Boss 行动 → READ（2 次/手 · 一次一组）→ PIN 真话 → 正确行动 → CRACK ×2 → GOTCHA 负债决胜（阶梯翻倍 · 心理泄漏）→ 统一结算 → 下一手</div>
+          <div class="guide__loop">Boss 行动 → 心理窗口 READ/回应 → CRACK 推进三态 → 反读盯住你的习惯 → EXPOSED 高承诺 = GOTCHA 负债决胜（阶梯翻倍 · 心理泄漏）→ 统一结算 → 下一手</div>
           <p>键盘：<strong>F</strong> 弃牌 · <strong>C</strong> 过牌/跟注 · <strong>P</strong> PRESSURE ·
             <strong>H</strong> HEAVY · <strong>A</strong> 全下 · <strong>R</strong> READ ·
             <strong>G</strong> GOTCHA · <strong>↵</strong> RAISE（GOTCHA 中）·

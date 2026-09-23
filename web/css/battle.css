@@ -1,9 +1,8 @@
 /* =========================================================================
-   battle.css — 《allin》单屏 Boss 战 v4：布局 + HUD + 筹码堆 + 演出
+   battle.css — 《allin》单屏 Boss 战 v5：布局 + HUD + 筹码堆 + 演出
    依赖 tokens.css（设计变量）与 cards.css（牌面）。
-   v4 已删除：自由加注滑杆 / GOTCHA 二选一确认条 / 旧模式配色 等死代码；
-   v4 新增：Known PIN 卡、碎片行 PIN 按钮、批量闪现（错开+泄漏金描边）、
-            GOTCHA 红金警戒态、阶梯 RAISE 按钮、负债红色数字。
+   v5 新增/改写：三态色板 CALM/SHAKEN/EXPOSED、Tell Window 轻提示、
+            玩家心理状态格、三态心理横幅色板、READ 按钮 FOCUS 文案；负债红色数字沿用 v4。
    ========================================================================= */
 
 /* hidden 属性必须赢过任何 display:flex/grid 的组件样式 */
@@ -58,7 +57,7 @@
   --boss-glow-soft: rgba(90, 169, 255, 0.3);
 }
 
-.zone--boss[data-state="TILT"] {
+.zone--boss[data-state="EXPOSED"] {
   --boss-c: #ff7a6b;
   --boss-glow: rgba(255, 122, 107, 0.13);
   --boss-glow-soft: rgba(255, 122, 107, 0.36);
@@ -508,7 +507,7 @@
   }
 }
 
-/* Boss 三状态情绪：冷静😏 / 动摇😳 / 上头😡 */
+/* Boss 三状态心理：冷静😏 / 动摇😳 / 暴露😵 */
 .hud__mood {
   display: flex;
   gap: 4px;
@@ -546,7 +545,7 @@
   box-shadow: 0 0 12px rgba(90, 169, 255, 0.55);
 }
 
-.hud__mood span.is-active[data-state="TILT"] {
+.hud__mood span.is-active[data-state="EXPOSED"] {
   color: #ffb3a8;
   border-color: #ff7a6b;
   box-shadow: 0 0 12px rgba(255, 122, 107, 0.6);
@@ -755,6 +754,40 @@
   align-self: flex-start;
   color: var(--gold);
   border-color: rgba(232, 200, 106, 0.4);
+}
+
+/* v5 玩家心理状态格（与 Boss 三态对称：冷静😏 / 动摇😳 / 暴露😵） */
+.player__mood {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--green);
+  border-color: rgba(75, 208, 138, 0.55);
+  background: rgba(75, 208, 138, 0.1);
+  transition: all 0.3s var(--ease);
+}
+
+.zone--player[data-state="SHAKEN"] .player__mood {
+  color: #a8d3ff;
+  border-color: #5aa9ff;
+  background: rgba(90, 169, 255, 0.14);
+  box-shadow: 0 0 12px rgba(90, 169, 255, 0.4);
+}
+
+.zone--player[data-state="EXPOSED"] .player__mood {
+  color: #ffb3a8;
+  border-color: #ff7a6b;
+  background: rgba(255, 122, 107, 0.16);
+  box-shadow: 0 0 14px rgba(255, 122, 107, 0.45);
+}
+
+/* 被反读盯上时玩家区透出警示边 */
+.zone--player[data-state="SHAKEN"] .player {
+  border-color: rgba(90, 169, 255, 0.45);
+}
+
+.zone--player[data-state="EXPOSED"] .player {
+  border-color: rgba(255, 122, 107, 0.6);
+  box-shadow: 0 0 24px rgba(255, 122, 107, 0.22);
 }
 
 /* =========================================================== 右侧信息栏（四分区） */
@@ -1389,6 +1422,52 @@ kbd {
   transition: color 0.2s var(--ease);
 }
 
+/* v5 Tell Window 轻提示：「🧠 心理窗口 · 他刚 X」——READ 唯一可用时机的浮出提示 */
+.tell-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  color: #cfe6ff;
+  background: rgba(90, 169, 255, 0.12);
+  border: 1px solid rgba(90, 169, 255, 0.6);
+  box-shadow: 0 0 16px rgba(90, 169, 255, 0.35);
+}
+
+.tell-toast__ico {
+  flex: 0 0 auto;
+  font-size: 13px;
+}
+
+.tell-toast__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 换窗口时重播一次入场（is-new 由 JS 在窗口 id 变化时加） */
+.tell-toast.is-new {
+  animation: tellIn 0.34s var(--ease-out);
+}
+
+@keyframes tellIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* READ 按钮：环形冷却 + READY 状态 */
 .mental--read {
   display: inline-flex;
@@ -1425,7 +1504,7 @@ kbd {
 
 .read-cd {
   font-size: 10.5px;
-  min-width: 40px;
+  min-width: 66px;   /* v5 文案：FOCUS 1/2 */
   color: var(--text-3);
 }
 
@@ -1671,6 +1750,36 @@ body.hitstop *::after {
 .fx-banner--mental .fx-banner__to {
   color: var(--amber);
   text-shadow: 0 0 14px rgba(240, 178, 74, 0.6);
+}
+
+/* v5 三态心理横幅色板：冷静（绿）/ 动摇（蓝）/ 暴露（红）—— 由目标状态决定 */
+.fx-banner--mental--CALM {
+  border-color: rgba(75, 208, 138, 0.55);
+}
+
+.fx-banner--mental--CALM .fx-banner__to {
+  color: var(--green);
+  text-shadow: 0 0 14px rgba(75, 208, 138, 0.55);
+}
+
+.fx-banner--mental--SHAKEN {
+  border-color: rgba(90, 169, 255, 0.62);
+  box-shadow: var(--shadow-3), 0 0 44px rgba(90, 169, 255, 0.3);
+}
+
+.fx-banner--mental--SHAKEN .fx-banner__to {
+  color: #a8d3ff;
+  text-shadow: 0 0 14px rgba(90, 169, 255, 0.65);
+}
+
+.fx-banner--mental--EXPOSED {
+  border-color: rgba(255, 122, 107, 0.72);
+  box-shadow: var(--shadow-3), 0 0 48px rgba(255, 122, 107, 0.35);
+}
+
+.fx-banner--mental--EXPOSED .fx-banner__to {
+  color: #ff8f7d;
+  text-shadow: 0 0 16px rgba(255, 122, 107, 0.7);
 }
 
 .fx-banner--win {

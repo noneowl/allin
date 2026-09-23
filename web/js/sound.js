@@ -160,6 +160,13 @@ export const sfx = {
     tone({ freq: 165, dur: 0.42, type: 'triangle', gain: 0.06, delay: 0.1 });
   },
 
+  /** v5 Tell Window 开启：两声轻提示（“他刚行动，窗口开着”），轻而不抢戏。 */
+  tell() {
+    tone({ freq: 659.25, dur: 0.07, type: 'sine', gain: 0.07 });
+    tone({ freq: 987.77, dur: 0.1, type: 'sine', gain: 0.055, delay: 0.07 });
+    noise({ dur: 0.04, gain: 0.03, band: 5200 });
+  },
+
   /** 全下：低频紧张感。 */
   allin() {
     [110, 138.6, 164.8].forEach((f) => tone({ freq: f, dur: 0.9, type: 'sawtooth', gain: 0.055 }));
