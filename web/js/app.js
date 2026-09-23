@@ -143,7 +143,7 @@ const D = {
   btnGotcha: null, gotchaLabel: null,
   end: null, endCard: null, endHeart: null, endKicker: null, endTitle: null, endSub: null, btnAgain: null,
   guide: null, guideStep: null, guidePages: null, guideDots: null,
-  guidePrev: null, guideSkip: null, guideNext: null, btnGuide: null,
+  guidePrev: null, guideSkip: null, guideNext: null, btnGuide: null, btnNewgame: null,
 };
 
 let boardRow = null;
@@ -1732,6 +1732,16 @@ function bindActions() {
     await request(() => api.newgame());
   });
 
+  // 对局中随时重开（v5 补：原先只有结局画面有「再来一局」）
+  D.btnNewgame.addEventListener('click', async () => {
+    if (!window.confirm('重新开始？当前牌局进度会丢弃。')) return;
+    unlockAudio();
+    S.polls = 0;
+    clearPoll();
+    S.chipsRef = 0;
+    await request(() => api.newgame());
+  });
+
   // 新手引导
   D.btnGuide.addEventListener('click', () => openGuide(S.guideIndex));
   D.guidePrev.addEventListener('click', () => {
@@ -1886,6 +1896,7 @@ function bindDom() {
   D.guideSkip = $('#guide-skip');
   D.guideNext = $('#guide-next');
   D.btnGuide = $('#btn-guide');
+  D.btnNewgame = $('#btn-newgame');
   buildGuide();
 
   paintReadCd(0, true); // READ 冷却环初始态
