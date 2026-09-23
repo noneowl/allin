@@ -84,7 +84,7 @@ export const NOISE_POOL = [
 /** DISTORTION：他自己的错误判断与自我安慰（无标签 —— 谎言不成链）。 */
 export const DISTORTION_POOL = {
   CALM: [
-    '他一定会 Fold。',
+    '他一定会弃。',
     '没什么好担心的。',
     '局面在我手里。',
   ],
@@ -104,6 +104,25 @@ export const DISTORTION_POOL = {
 };
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+/**
+ * v6 §5：TRUE 碎片的交互语义（他希望你做什么 / 害怕你做什么）。
+ * 只对 TRUE 有；NOISE/DISTORTION 恒无。不进 wire —— 选中（PIN）后由服务端
+ * 推导成 HYPOTHESIS 下发 {mode, action}。
+ */
+export const INTERACTION = {
+  wants_fold:     { desire: 'FOLD' },
+  call_welcome:   { desire: 'CALL' },
+  strong_hand:    { desire: 'CALL' },
+  board_lock:     { desire: 'CALL' },
+  trap:           { desire: 'RAISE' },
+  overconfidence: { desire: 'RAISE' },
+  fear_call:      { fear: 'CALL' },
+  missed_board:   { fear: 'CALL' },
+  fear_raise:     { fear: 'RAISE' },
+  weak_hand:      { fear: 'RAISE' },
+  draw:           { fear: 'RAISE' },
+};
 
 /**
  * TRUE 碎片的家族选择：由 Boss 真实处境（intent + 胜率）决定 —— TRUE 必须是真的。
@@ -204,10 +223,13 @@ export function makeFragment(ctx) {
   }
   const pool = TRUE_FAMILIES[family];
   const base = 0.55 + rng() * 0.3 + (state === 'EXPOSED' ? 0.1 : 0);
+  const ix = INTERACTION[family] ?? {};
   return {
     text: pool[Math.floor(rng() * pool.length)],
     type: 'TRUE',
     tags: [family],
+    desire: ix.desire ?? null,  // 他希望你…
+    fear: ix.fear ?? null,      // 他害怕你…
     strength: clamp(base, 0, 0.95),
   };
 }

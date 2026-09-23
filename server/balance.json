@@ -408,5 +408,22 @@
       "playerAction": "bet",
       "why": "他输急眼爱开火 → 我让牌，他果然开火"
     }
-  ]
+  ],
+  "opening": {
+    "comment": "Opening 强度：score=tellStrength+streetMod（状态不进分数，只走 stateTierBonus 抬一级，避免双重叠加）",
+    "thresholds": {
+      "weak": 0.06,
+      "normal": 0.18
+    },
+    "stateTierBonus": {
+      "CALM": 0,
+      "SHAKEN": 1,
+      "EXPOSED": 1
+    },
+    "labels": {
+      "WEAK": "微弱",
+      "NORMAL": "明显",
+      "STRONG": "强烈"
+    }
+  }
 }

@@ -23,7 +23,7 @@ import { Boss } from './boss/boss.js';
 import { matchCrackRule, buildCrack } from './boss/crack-rules.js';
 import { makeFragment, flashMs } from './boss/fragments.js';
 import { PlayerModel } from './boss/playermodel.js';
-import { FINAL_HEART, DEFEAT_LINE } from './boss/talk.js';
+import { FINAL_HEART, DEFEAT_LINE, pickCrackReact } from './boss/talk.js';
 import { MOODS, FACES, isDownEvent, applyTransition } from './boss/mental.js';
 
 export const PLAYER = 0;
@@ -59,6 +59,21 @@ function tellTier(action, put, potBefore, heavyFrac) {
   const ratio = put / Math.max(1, potBefore);
   if (ratio >= heavyFrac) return 'heavy';
   return action === 'raise' ? 'raise' : 'bet';
+}
+
+/**
+ * v6 §2：Opening 强度（纯函数，供测试穷举）。
+ * score = tellStrength[档] + streetMod[街]（状态不进分数，只走抬级，避免双重叠加）
+ * → 阈值分 WEAK/NORMAL/STRONG → SHAKEN/EXPOSED 各抬一级（封顶 STRONG）。
+ */
+export function computeOpeningStrength(balance, state, tier, street) {
+  const cfg = balance?.opening ?? {};
+  const rd = balance?.read ?? {};
+  const score = (rd.tellStrength?.[tier] ?? 0) + (rd.streetModifier?.[street] ?? 0);
+  const th = cfg.thresholds ?? { weak: 0.06, normal: 0.18 };
+  let idx = score < th.weak ? 0 : (score < th.normal ? 1 : 2);
+  idx = Math.min(2, idx + (cfg.stateTierBonus?.[state] ?? 0));
+  return ['WEAK', 'NORMAL', 'STRONG'][idx];
 }
 
 /** 每批碎片条数（min..max 均匀取整）。 */
@@ -128,6 +143,7 @@ export class Battle {
     this.tellWindow = null;         // 当前心理窗口 {id,actionId,handId,street,bossAction,tier}
     this.pendingBossCounter = null; // Boss 反读陷阱（随窗口生死）
     this.playerState = 'CALM';      // 玩家心理状态（跨手持续，newgame 复位）
+    this.comboCount = 0;            // v6 §9：连续 CRACK 段数（仅 UI/GOTCHA 参考，无 Buff）
     this.handFragments = new Map(); // 窗口内碎片元数据（id → meta，服务端私有）
     this.pinned = null;             // 唯一保留位（字段不叫 pin：会遮蔽方法 pin()）：{ fragmentId, text, type, tags, sourceAction, handId, verified }
     // ---- GOTCHA 负债状态 ----
@@ -246,6 +262,16 @@ export class Battle {
   }
 
   // ------------------------------------------------- v5：Tell/Focus/反读/窗口
+
+  /**
+   * v6 §2：Opening 强度。
+   * score = tellStrength[档] + streetMod[街]（状态不进分数，只走抬级，避免双重叠加）
+   * → 阈值分 WEAK/NORMAL/STRONG → SHAKEN/EXPOSED 各抬一级（封顶 STRONG）。
+   * 只用于「心理波动：微弱/明显/强烈」——绝不下发概率。
+   */
+  #openingStrength(tier, street) {
+    return computeOpeningStrength(this.balance, this.boss.state, tier, street);
+  }
 
   /** 跨街授予 Focus（flop/turn/river 各 +1，封顶 focusMax；翻前0）。 */
   #grantFocus(fromStreet, toStreet) {
@@ -413,6 +439,7 @@ export class Battle {
       this.#closeTellWindow();
       if (d.phase === 'playing' && d.toAct === PLAYER && preStreet === d.street) {
         const tier = tellTier(normalized.type, normalized.put ?? 0, potBefore, this.balance.sizing?.heavyFrac ?? 1);
+        const strength = this.#openingStrength(tier, d.street); // v6 §2：WEAK/NORMAL/STRONG
         this.actionSeq += 1;
         this.tellSeq += 1;
         this.tellWindow = {
@@ -422,6 +449,7 @@ export class Battle {
           street: d.street,
           bossAction: normalized.type,
           tier,
+          strength,
         };
         events.push({
           type: 'tell_window_open',
@@ -429,6 +457,7 @@ export class Battle {
           actionId: this.tellWindow.actionId,
           street: this.tellWindow.street,
           bossAction: normalized.type,
+          strength,
         });
         this.pendingBossCounter = this.#evaluateBossCounter(normalized, bossPutRatio);
       }
@@ -603,15 +632,17 @@ export class Battle {
    */
   #validatePinCrack(events, actionLabel) {
     const pin = this.pinned;
-    if (!pin || pin.verified || pin.type !== 'TRUE') return;
+    if (!pin || pin.verified || pin.type !== 'TRUE') return false;
     const intent = this.boss.currentIntent();
-    if (!intent) return;
+    if (!intent) return false;
     const rule = matchCrackRule(this.balance, pin, actionLabel, intent);
-    if (!rule) return;
+    if (!rule) return false;
 
     pin.verified = true;
     const crack = buildCrack(rule, pin, actionLabel, this.handNo, ++this.crackSeq);
     this.cracks.push({ ...crack, result: null });
+    // v6 §9：CRACK 先入段（事件携带当前段数，供 CRACK ×N 大字）
+    this.comboCount += 1;
     events.push({
       type: 'crack',
       id: crack.id,
@@ -621,10 +652,15 @@ export class Battle {
       strength: crack.strength,
       critical: crack.critical,
       handNo: crack.handNo,
+      combo: this.comboCount,
     });
-    this.#feed('crack', `CRACK! [${crack.kind}] ${crack.evidence.join(' + ')} × ${actionLabel} —— ${crack.why}`);
-    // ★ §6：CRACK = 心理攻击命中，立即推进 Boss 心理状态（CALM→SHAKEN→EXPOSED）
+    this.#feed('crack', `CRACK${this.comboCount > 1 ? ` ×${this.comboCount}` : ''}! [${crack.kind}] ${crack.evidence.join(' + ')} × ${actionLabel} —— ${crack.why}`);
+    // v6 §8：即时反馈链 = CRACK → Boss 受创台词 → 心理状态推进
+    const react = pickCrackReact(this.rng);
+    events.push({ type: 'talk', line: react });
+    this.#feed('talk', react);
     this.#fire(events, 'CRACK');
+    return true;
   }
 
   act(action, amount) {
@@ -676,9 +712,12 @@ export class Battle {
     events.push(...outEvents);
     this.#recordHistory('player', displayAction, preStreet, normalized.to ?? 0);
 
-    // ---- ★ v5 心理结算（顺序关键：必须在窗口清理之前）----
+    // ---- ★ v5/v6 心理结算（顺序关键：必须在窗口清理之前）----
+    // v6 §9 combo：命中 +1；有 Opening 却没命中（错过/判断失败）清零；无窗口的行动不计
+    const openingWasOpen = Boolean(this.tellWindow);
     // 1) PIN 的真话 × 本次行动 × Boss 当前 intent → 可能 CRACK 并推进其心理
-    this.#validatePinCrack(events, displayAction);
+    const cracked = this.#validatePinCrack(events, displayAction); // 内部已 comboCount+1（并随事件下发）
+    if (!cracked && openingWasOpen) this.comboCount = 0;           // 有 Opening 却未命中 = 清零
     // 2) Boss 反读陷阱：玩家命中被诱导的行为 → PLAYER CRACKED + 玩家心理推进
     this.#resolveBossCounter(events, displayAction);
     // 3) 回应落地 → 窗口关闭、碎片/PIN 全部清空（无论成败，方案 §2）
@@ -769,6 +808,8 @@ export class Battle {
         text: frag.text,
         type: frag.type,          // ★ 服务端私有
         tags: frag.tags.slice(),  // ★ 服务端私有
+        desire: frag.desire ?? null, // ★ 服务端私有（选中后推导 HYPOTHESIS）
+        fear: frag.fear ?? null,     // ★ 服务端私有
         strength: frag.strength,
         sourceAction: win.bossAction,
         binding: { handId: win.handId, street: win.street, actionId: win.actionId, tellWindowId: win.id },
@@ -808,6 +849,8 @@ export class Battle {
       text: meta.text,
       type: meta.type,
       tags: meta.tags.slice(),
+      desire: meta.desire ?? null,   // v6 §5：他希望你…（服务端私有）
+      fear: meta.fear ?? null,       // v6 §5：他害怕你…
       sourceAction: meta.sourceAction,
       binding: meta.binding,
       handId: meta.handId,
@@ -914,8 +957,18 @@ export class Battle {
             handId: this.tellWindow.handId,
             street: this.tellWindow.street,
             bossAction: this.tellWindow.bossAction,
+            strength: this.tellWindow.strength,   // v6：WEAK/NORMAL/STRONG
           }
         : null,
+      // v6 §3：HYPOTHESIS —— 选中碎片推导出的「他希望/害怕你做什么」
+      hypothesis: (() => {
+        if (!this.pinned) return null;
+        if (this.pinned.desire) return { mode: 'want', action: this.pinned.desire };
+        if (this.pinned.fear) return { mode: 'fear', action: this.pinned.fear };
+        return null; // 噪音/无可利用语义 → 无判断（CRACK 也不可能成立）
+      })(),
+      // v6 §9：连续 CRACK 段数（仅 UI/GOTCHA 前置参考）
+      comboCount: this.comboCount,
       blind: { sb: blind.sb, bb: blind.bb, tier: blind.tier, nextUp: blind.nextUp },
       effectiveStack: Math.min(d.stacks[PLAYER], d.stacks[BOSS]),
       mode: this.mode,

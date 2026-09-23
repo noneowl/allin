@@ -85,7 +85,7 @@ test('隐私：view/events 不含 deck、intent、碎片/ PIN 的类型与标签
     }
     // 面板与 PIN 的字段白名单
     for (const f of v.readFragments) assert.deepEqual(Object.keys(f).sort(), ['atHand', 'id', 'tellWindowId', 'text']);
-    if (v.tellWindow) assert.deepEqual(Object.keys(v.tellWindow).sort(), ['actionId', 'bossAction', 'handId', 'id', 'street'], '窗口剥掉内部 tier');
+    if (v.tellWindow) assert.deepEqual(Object.keys(v.tellWindow).sort(), ['actionId', 'bossAction', 'handId', 'id', 'street', 'strength'], '窗口剥掉内部 tier，带 strength');
     if (v.pin) assert.deepEqual(Object.keys(v.pin).sort(), ['text', 'verified']);
 
     const prevHand = b.handNo;
@@ -110,8 +110,10 @@ test('隐私：view/events 不含 deck、intent、碎片/ PIN 的类型与标签
         }
       }
       if (e.type === 'tell_window_open') {
-        assert.deepEqual(Object.keys(e).sort(), ['actionId', 'bossAction', 'id', 'street', 'type'], 'tell_window_open 字段越界');
+        assert.deepEqual(Object.keys(e).sort(), ['actionId', 'bossAction', 'id', 'street', 'strength', 'type'], 'tell_window_open 字段越界');
+        assert.ok(['WEAK', 'NORMAL', 'STRONG'].includes(e.strength), '强度三档');
       }
+      if (e.type === 'crack') assert.ok(typeof e.combo === 'number', 'crack 携带段数');
       if (e.type === 'player_cracked') assert.ok(!('pattern' in e) && !('threshold' in e), '反读不下发计数器');
       if (e.type === 'crack') assert.ok(!('intent' in e), 'crack 不回带 intent');
       if (e.type === 'showdown') for (const h of e.hands) if (h.seat === 1) assert.equal(h.hole.length, 2);

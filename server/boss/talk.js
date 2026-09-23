@@ -104,6 +104,20 @@ export const TALK = {
   },
 };
 
+/**
+ * v6 §8：CRACK 即时受创反应（短、愣、真实）。
+ * battle 在 crack 事件后立刻抽一条 → Player 脑中立即建立「READ + 行动 = 打中他」。
+ */
+export const CRACK_REACT = [
+  '……',
+  '他真的跟了？',
+  '……你读到了。',
+  '这下疼了。',
+  '等等——你怎么敢的。',
+];
+export const pickCrackReact = (rng = Math.random) =>
+  CRACK_REACT[Math.floor(rng() * CRACK_REACT.length)];
+
 /** 赢下一手之后的台词（按情绪抽）。 */
 export const WIN_QUIP = {
   CALM: [L('收了。'), L('这手该我赢。')],

@@ -201,3 +201,79 @@ view.gotcha = { "street":"river", "bossAction":"raise" }   // 非 null 即按钮
 ## 节奏
 
 沿用 v4；`tell_window_open` 是轻提示（不阻塞队列）；`player_cracked` 允许0.8–1.2s 停顿。
+
+---
+
+# v6 增量契约（Opening / Hypothesis / Combo + 战斗 UI 节奏）
+
+**只增量，不改 v5 已定语义**（Tell Window 生命周期、Focus、CRACK 三要件、三态、GOTCHA 全部沿用）。
+Wire 尽量不变：窗口仍叫 `tell_window/tellWindow`（对玩家呈现为 **OPENING!**）。
+
+## 1. Opening 强度（新增字段）
+
+开窗时计算一次，随窗口存续：
+
+```
+score = read.tellStrength[tier] + read.streetModifier[street]   // 状态不进分数，只走抬级（避免双重叠加）
+tierIdx = (score < opening.thresholds.weak ? 0 : score < opening.thresholds.normal ? 1 : 2)
+tierIdx = min(2, tierIdx + opening.stateTierBonus[state])      // SHAKEN/EXPOSED 抬一级
+strength = ['WEAK','NORMAL','STRONG'][tierIdx]
+```
+
+- 配置：`opening: { thresholds: {weak, normal}, stateTierBonus: {CALM,SHAKEN,EXPOSED}, labels: {WEAK:'微弱',NORMAL:'明显',STRONG:'强烈'} }`
+- wire：`tell_window_open` 与 `view.tellWindow` 各增 `strength: "WEAK"|"NORMAL"|"STRONG"`
+- UI 文案（**绝不显示 TRUE 概率**）：`OPENING! 心理波动：微弱/明显/强烈`
+- READ 门禁不变：无窗口 → `NO_TELL_WINDOW`（= 无 Opening）
+
+## 2. Fragment 的 desire/fear（服务端私有）
+
+TRUE 碎片按家族附带交互语义（NOISE/DISTORTION 一律没有）：
+
+| 家族 | 语义 |
+| --- | --- |
+| wants_fold | desire FOLD |
+| call_welcome / strong_hand / board_lock | desire CALL |
+| trap / overconfidence | desire RAISE |
+| fear_call / missed_board | fear CALL |
+| fear_raise / weak_hand / draw | fear RAISE |
+
+**不进 wire**：`read_batch.fragments` 仍是 `{id, text}`（选择层只见文案）。
+
+## 3. HYPOTHESIS（PIN 即判断）
+
+`POST /api/pin {fragmentId}` 成功后 view 增：
+
+```jsonc
+"hypothesis": { "mode": "want" | "fear", "action": "FOLD"|"CALL"|"RAISE"|"CHECK" } | null
+```
+
+- 由服务端从 pinned 碎片的 desire/fear 推导；碎片无 desire/fear（噪音）→ `hypothesis: null`（照常可 PIN，CRACK 不可能成立）
+- 生命周期 = 窗口：玩家行动后 `pinned=null → hypothesis=null`；换手清空
+- **CRACK 判定不变**（tag × 行动 × 当前 intent，规则表照旧——desire/fear 是同一批规则的玩家侧翻译）
+
+## 4. 按钮关系文案（纯前端，无「推荐/正确/+CRACK」）
+
+对假设目标 T=(mode,action)，本地生成三键提示：
+- `A === T`：want → `顺从他的意图`；fear → `直接测试他的恐惧`
+- `want && A !== T`：`CALL → 挑战他的意图`；`RAISE/PRESSURE/HEAVY → 施压`；`FOLD → 拒绝`；`CHECK → 观望`
+- `fear && A !== T`：`CALL → 保守回应`；`RAISE → 反向追问`；`FOLD → 退开观察`；`CHECK → 原地试探`
+
+## 5. Combo（仅 UI 反馈 + GOTCHA 前置参考，无 Buff）
+
+- `this.comboCount`（战斗级，newgame 归0，不按手重置）；`view.comboCount`
+- 玩家行动时：本次 **CRACK 成功 → +1**；未成功且**当时存在 Opening（有窗口）→ 归0**（错过或判断失败）；**无窗口的行动不计入**（没东西可错过）
+- CRACK 大字副标：`CRACK ×N`（N≥2 时）
+
+## 6. CRACK 即时反应
+
+CRACK 事件后紧跟 Boss 受创台词：`{type:"talk", line}`（`talk.js → CRACK_REACT` 池，如「……」「他真的跟了？」）+ feed，随后才是 `mental` 推进。顺序：`crack → talk(受创) → mental`。
+
+## 7. 碎片文案长度
+
+TRUE/NOISE/DISTORTION 池全部压到 **2–10 个中文字**（服务端本轮会改池文案，wire 结构不变）。
+
+## 8. 测试新增（方案 §15 A–I）
+
+弱行为→WEAK/强承诺→STRONG、无 Opening 不可 READ、选碎片→hypothesis 正确、
+TRUE+对→立即 CRACK、NOISE/DISTORTION 不 CRACK、错误行动不 CRACK、CRACK 立即改状态、
+行动后 opening/fragments/hypothesis 全清、combo 递增与中断清零。
