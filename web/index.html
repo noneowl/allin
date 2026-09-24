@@ -81,10 +81,11 @@
           <div class="felt" id="felt">
             <div class="felt__watermark">TEXAS HOLD'EM · BOSS 战</div>
             <div class="felt__center">
-              <!-- v6 Opening 轻提示：开窗时浮出（strength → 微弱/明显/强烈，绝不显示概率） -->
-              <div class="opening" id="opening-note" hidden>
-                <span class="opening__kick">OPENING!</span>
-                <span class="opening__label">心理波动：</span>
+              <!-- v6/v7 窗口中央轻提示：OPENING（金 · strength → 微弱/明显/强烈，绝不显示概率）
+                   / THREAT（红 · threat.type 中文 + 把握 %，kind 驱动只换文案与配色） -->
+              <div class="opening" id="opening-note" data-kind="opening" hidden>
+                <span class="opening__kick" id="opening-kick">OPENING!</span>
+                <span class="opening__label" id="opening-label">心理波动：</span>
                 <b class="opening__strength" id="opening-strength">明显</b>
               </div>
               <div class="street" id="street-badge">翻牌前</div>
@@ -176,12 +177,7 @@
       </div>
 
       <div class="ab__center">
-        <!-- v6 HYPOTHESIS 短横条：选中碎片生成（约 2s 或到下次行动即清，以 view.hypothesis 为准） -->
-        <div class="ab__hypo" id="hypo-bar" hidden>
-          <span class="ab__hypo-tag">HYPOTHESIS</span>
-          <b class="ab__hypo-text" id="hypo-text">—</b>
-        </div>
-
+        <!-- v7：独立 HYPOTHESIS 横条已删除 —— 选中即生效，关系小字直接挂在按钮下 -->
         <div class="ab__acts" id="ab-acts">
           <div class="ab__cell">
             <button class="btn btn--lg btn--fold" id="btn-fold" type="button">弃牌 <kbd>F</kbd></button>
@@ -251,9 +247,10 @@
   <!-- ============================================ v6 READ 即时选择层（桌面中央，临时不驻留） -->
   <div class="pick" id="pick-layer" hidden>
     <div class="pick__card">
+      <!-- v7：标题随窗口 kind 换文案（OPENING「他刚才露出了破绽？」/ THREAT「他正赌你会怎么打？」），结构不变 -->
       <div class="pick__head">
-        <span class="pick__title">READ</span>
-        <span class="pick__sub">点一条钉住 · 其余即刻消失</span>
+        <span class="pick__title" id="pick-title">他刚才露出了破绽？</span>
+        <span class="pick__sub" id="pick-sub">点一条钉住 · 其余即刻消失</span>
       </div>
       <div class="pick__rows" id="pick-rows"></div>
     </div>
@@ -367,6 +364,9 @@
             <li>同时你的心理状态格被推进一档（冷静 → 动摇 → 暴露），
               Boss 的台词与下注会更放肆</li>
             <li>破解：换窗口换打法 —— 你不按老路走，陷阱就作废，他会重新评估</li>
+            <li>看穿他的预测再应对有三种结果：<span class="hi">EVASION</span>（照他的预测退，
+              但你已看穿 —— 稳住不掉状态）、<span class="hi">BREAK</span>（不按预测走 —— 打乱了他的剧本）、
+              <span class="hi">REVERSAL</span>（不按预测走还反压 —— 抢回主动，反攻窗口随之而来）</li>
           </ul>
         </section>
 

@@ -1430,48 +1430,7 @@ kbd {
   opacity: 0;
 }
 
-/* v6 HYPOTHESIS 短横条：选中即显，约 2s / 行动即清 */
-.ab__hypo {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  max-width: 100%;
-  padding: 4px 16px;
-  border-radius: 999px;
-  font-size: 13px;
-  letter-spacing: 0.06em;
-  color: var(--text-0);
-  background: linear-gradient(180deg, rgba(232, 200, 106, 0.18), rgba(232, 200, 106, 0.07));
-  border: 1px solid rgba(232, 200, 106, 0.55);
-  box-shadow: 0 0 18px rgba(232, 200, 106, 0.22);
-  white-space: nowrap;
-}
-
-.ab__hypo-tag {
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.2em;
-  color: var(--gold);
-}
-
-.ab__hypo-text {
-  font-weight: 800;
-}
-
-.ab__hypo.is-new {
-  animation: hypoIn 0.3s var(--ease-out);
-}
-
-@keyframes hypoIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.92);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
+/* v7：独立 HYPOTHESIS 横条已删除（选中即生效）—— 关系小字只走 .ab__btn-hint */
 
 /* 情境行：窗口轻提示 + 循环一句话（同排收纳） */
 .ab__legend {
@@ -1760,6 +1719,32 @@ body.hitstop *::after {
   text-shadow:
     0 0 18px rgba(232, 200, 106, 0.9),
     0 4px 0 var(--gold-2),
+    0 10px 30px rgba(0, 0, 0, 0.7);
+}
+
+/* v7 七种 Hit Confirm 补充色板：EVASION 灰蓝 / BREAK 青 / REVERSAL 金红 */
+.fx-bigtext--steel .fx-bigtext__title {
+  color: #dfe9f5;
+  text-shadow:
+    0 0 18px rgba(130, 160, 195, 0.9),
+    0 4px 0 #4c5e75,
+    0 10px 30px rgba(0, 0, 0, 0.7);
+}
+
+.fx-bigtext--cyan .fx-bigtext__title {
+  color: #d8fffb;
+  text-shadow:
+    0 0 18px rgba(64, 224, 208, 0.9),
+    0 4px 0 #0e7c74,
+    0 10px 30px rgba(0, 0, 0, 0.7);
+}
+
+.fx-bigtext--goldred .fx-bigtext__title {
+  color: #fff1cf;
+  text-shadow:
+    0 0 14px rgba(232, 200, 106, 0.95),
+    0 0 30px rgba(216, 69, 90, 0.75),
+    0 4px 0 var(--red-deep),
     0 10px 30px rgba(0, 0, 0, 0.7);
 }
 
@@ -2323,6 +2308,27 @@ body.hitstop *::after {
   animation: tellIn 0.34s var(--ease-out);
 }
 
+/* v7 THREAT 中央提示：与 OPENING 结构完全一致，只换红系配色（区别于金色 OPENING!） */
+.opening[data-kind="threat"] {
+  background: rgba(216, 69, 90, 0.14);
+  border-color: rgba(216, 69, 90, 0.7);
+  box-shadow: 0 0 22px rgba(216, 69, 90, 0.45);
+}
+
+.opening[data-kind="threat"] .opening__kick {
+  color: #ff6b7f;
+  text-shadow: 0 0 14px rgba(216, 69, 90, 0.75);
+}
+
+.opening[data-kind="threat"] .opening__label {
+  color: #ffc9d1;
+}
+
+.opening[data-kind="threat"] .opening__strength {
+  color: #ff97a5;
+  text-shadow: 0 0 12px rgba(216, 69, 90, 0.6);
+}
+
 /* READ 即时选择层：桌面中央临时层 —— 大字、同款样式同款可信度、无任何真假暗示 */
 .pick {
   position: fixed;
@@ -2396,6 +2402,36 @@ body.hitstop *::after {
   border-color: var(--gold);
   background: rgba(232, 200, 106, 0.16);
   transform: translateX(4px);
+}
+
+/* v7 选中即生效：命中行做极短「追击态」锁定高亮（0.4–0.6s）→ 层收起；
+   其余行同时压暗（.is-locking 挂在容器上），结构与操作语言不变 */
+.pick__rows.is-locking .pick__row:not(.is-lock) {
+  opacity: 0.35;
+  transform: translateX(-6px);
+  transition: opacity 0.16s var(--ease), transform 0.16s var(--ease);
+}
+
+.pick__row.is-lock {
+  border-color: var(--gold);
+  background: rgba(232, 200, 106, 0.26);
+  color: #fff6dd;
+  transform: translateX(4px) scale(1.015);
+  box-shadow: 0 0 24px rgba(232, 200, 106, 0.45);
+  animation: none;
+  transition: border-color 0.12s var(--ease), background 0.12s var(--ease),
+    box-shadow 0.12s var(--ease), transform 0.12s var(--ease);
+}
+
+/* v7 THREAT 选择层：结构完全一致，只换标题配色（红系，区别于 OPENING 金） */
+.pick[data-kind="threat"] .pick__card {
+  border-color: rgba(216, 69, 90, 0.6);
+  box-shadow: var(--shadow-3), 0 0 46px rgba(216, 69, 90, 0.3);
+}
+
+.pick[data-kind="threat"] .pick__title {
+  color: #ff6b7f;
+  text-shadow: 0 0 14px rgba(216, 69, 90, 0.55);
 }
 
 /* v6：按钮现在包在 .ab__cell 里（下方带关系小字）——居中规则跟随新结构 */

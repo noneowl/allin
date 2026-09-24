@@ -125,11 +125,12 @@ function shockwave(centerEl) {
   else setTimeout(cleanup, 540);
 }
 
-/** 大字弹出：「异议命中！CONTRADICTION」等。 */
+/** 大字弹出：「异议命中！CONTRADICTION」等。tone: red(默认) | gold | v7: steel/cyan/goldred。 */
 export function bigText(title, sub = '', { tone = 'red', holdMs = 760 } = {}) {
   const host = fxRoot();
   if (!host) return Promise.resolve();
-  const node = el('div', { class: `fx-bigtext${tone === 'gold' ? ' fx-bigtext--gold' : ''}` }, [
+  const mod = tone && tone !== 'red' ? ` fx-bigtext--${tone}` : '';
+  const node = el('div', { class: `fx-bigtext${mod}` }, [
     el('span', { class: 'fx-bigtext__title', text: title }),
     sub ? el('span', { class: 'fx-bigtext__sub', text: sub }) : null,
   ]);
