@@ -276,9 +276,12 @@ test('事件契约：类型白名单 + hand_start/hand_end 字段齐全 + 筹码
   const rng = makeRng(37);
   const clk = clock();
   const b = new Battle({ balance: cloneBalance({ readUsesPerHand: 6 }), rng, now: clk });
+  const bossHoleCards = []; // v7.1：Boss 底牌只许出现在 showdown / hand_end
   let sawHandEnd = false;
   let steps = 0;
   while (!sawHandEnd && steps++ < 400 && b.view().phase === 'playing') {
+    bossHoleCards.length = 0;                                   // 同步当前一手的 Boss 底牌
+    bossHoleCards.push(...(b.duel.hole?.[1] ?? []));
     clk(); // 绕开 READ 冷却
     const v = b.view();
     if (v.toAct !== 0) break;
@@ -299,7 +302,12 @@ test('事件契约：类型白名单 + hand_start/hand_end 字段齐全 + 筹码
       if (e.type === 'hand_end') {
         assert.ok(e.stacks && typeof e.effectiveStack === 'number' && e.blind && typeof e.mode === 'string');
         assert.equal(e.stacks.player + e.stacks.boss, 5500, '筹码守恒');
+        assert.ok(Array.isArray(e.bossHole) && e.bossHole.length === 2, 'v7.1 一手结束恒开 Boss 底牌');
         sawHandEnd = true;
+      }
+      if (e.type !== 'showdown' && e.type !== 'hand_end') {
+        const bj = JSON.stringify(e);
+        for (const card of bossHoleCards) assert.ok(!bj.includes(`"${card}"`), `事件 ${e.type} 泄露 Boss 底牌 ${card}`);
       }
     }
   }

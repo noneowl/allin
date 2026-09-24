@@ -562,6 +562,8 @@ export class Battle {
       handNo: this.handNo,
       winner,
       pot,
+      // v7.1 开牌：一手结束无论摊牌/弃牌都公开 Boss 底牌（view.boss.hole 仍恒 null）
+      bossHole: d.hole[BOSS].slice(),
       stacks: { player: d.stacks[PLAYER], boss: d.stacks[BOSS] },
       effectiveStack: Math.min(d.stacks[PLAYER], d.stacks[BOSS]),
       blind: { sb: blind.sb, bb: blind.bb },

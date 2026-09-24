@@ -1358,6 +1358,8 @@ const EVENT_PLAYERS = {
     S.openingId = null;
     closePick();                // v6：选择层绝不跨手牌存活
     boardRow.render([]);
+    playerRow.render([]);       // ★ 上一手的公牌与手牌必须在这里一起归零
+    bossRow.render([]);
     setHandname(D.playerHandname, 0);
     setHandname(D.bossHandname, 1);
     fx.tableZoom(false);
@@ -1722,9 +1724,10 @@ const EVENT_PLAYERS = {
       }
     }
 
-    playerRow.render(holeSpecs(S.view?.player?.hole, 0));
-    setHandname(D.playerHandname, 0);
-    setHandname(D.bossHandname, 1);
+    // ★ 用摊牌事件自带的本手底牌：S.view 此刻可能已是【下一手】快照（换手竞态）
+    const playerHand = hands.find((h) => h?.seat === 0);
+    if (arr(playerHand?.hole).length) playerRow.render(holeSpecs(playerHand.hole, 0));
+    // 牌型名沿用屏幕上已显示的本手值，hand_start 会统一重置（不再读 stale view）
 
     if (ev.split) fx.popup(D.pot, '平分底池', 'hit');
     await fx.sleep(680);
@@ -1786,6 +1789,22 @@ const EVENT_PLAYERS = {
     if (winner === 0) sfx.win();
     else if (winner === 1) sfx.lose();
     else sfx.notify();
+
+    // ★ 开牌（v7.1）：弃牌局也要看到他的底牌 —— 「他刚才是不是诈唬」必须有答案。
+    // 摊牌局 S.showdown 已开过，跳过避免二次翻牌。
+    const endHole = arr(ev.bossHole);
+    if (endHole.length && !S.showdown) {
+      const down = endHole.map(() => true);
+      bossRow.render(endHole.map((card) => ({ card, down: true })));
+      await fx.sleep(240);
+      for (let i = 0; i < endHole.length; i += 1) {
+        down[i] = false;
+        bossRow.render(endHole.map((card, j) => ({ card, down: down[j] })));
+        sfx.turn();
+        await fx.sleep(300);
+      }
+      appendCapped(D.battlelog, logNode({ kind: 'hand', text: `对手亮牌：${endHole.join(' ')}` }));
+    }
 
     // 结算横幅 ≈2.2s（筹码堆迁移），之后才轮到队列里的下一手 hand_start
     const settle = fx.banner({ text, sub: ev.bluffCaught ? 'BLUFF CAUGHT' : '', cls, holdMs: 2200 });

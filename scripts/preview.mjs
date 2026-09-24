@@ -401,6 +401,9 @@ async function selftest() {
             const L = v.player.legal;
             const r = b.act(L.check ? 'check' : (L.call ? 'call' : (L.fold ? 'fold' : 'allin')));
             leaks.push(...r.events.filter((e) => e.type === 'read_batch' && e.source === 'gotcha'));
+            for (const e of r.events) {
+              if (e.type === 'hand_end') c.ok('hand_end 恒开 Boss 底牌', Array.isArray(e.bossHole) && e.bossHole.length === 2, JSON.stringify(e.bossHole));
+            }
           }
           c.ok('结算守恒（含负债投入）', held(b) === baseline, `${held(b)}≠${baseline}`);
           if (b.handNo > h0) {

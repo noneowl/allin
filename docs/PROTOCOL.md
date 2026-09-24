@@ -178,6 +178,9 @@ view.gotcha = { "street":"river", "bossAction":"raise" }   // 非 null 即按钮
 
 ```jsonc
 { "type":"tell_window_open", "id":7, "actionId":12, "street":"flop", "bossAction":"raise" }   // ★新增
+{ "type":"hand_end", ..., "bossHole": ["As","Kd"] }   // ★v7.1：一手结束恒开 Boss 底牌
+   // 摊牌局已由 showdown 开过（客户端跳过）；弃牌局也亮牌 ——「他刚才是不是诈唬」必须有答案。
+   // view.boss.hole 仍恒 null：打牌过程中绝不下发，只在一手结束时开牌。
 { "type":"read_batch", "source":"manual", "tellWindowId":7, "actionId":12, "flashMs":1400,    // ★增字段
   "fragments":[{"id":"w7f1","text":"…"}] }
 { "type":"player_cracked", "ruleId":"fear_pressure", "action":"fold", "bossAction":"heavy", "why":"…" }  // ★新增
