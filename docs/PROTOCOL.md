@@ -277,3 +277,90 @@ TRUE/NOISE/DISTORTION 池全部压到 **2–10 个中文字**（服务端本轮�
 弱行为→WEAK/强承诺→STRONG、无 Opening 不可 READ、选碎片→hypothesis 正确、
 TRUE+对→立即 CRACK、NOISE/DISTORTION 不 CRACK、错误行动不 CRACK、CRACK 立即改状态、
 行动后 opening/fragments/hypothesis 全清、combo 递增与中断清零。
+
+---
+
+# v7 增量契约（THREAT 防守循环 / 选中即生效 / 四种防守结算）
+
+**在 v6 之上增量**；OPENING 语义、Focus、选择层操作、GOTCHA 全部不变。不新增任何按钮。
+
+## 1. 窗口二元化：kind
+
+`tell_window_open` 与 `view.tellWindow` 增：
+
+```jsonc
+{ "kind": "OPENING" | "THREAT",
+  "threat": { "type": "PLAYER_WILL_FOLD_TO_PRESSURE", "confidence": 0.72 }  // 仅 THREAT
+}
+```
+
+- 开窗时判定：若 `pendingBossCounter` 成立（**行为模式成形 × Boss 本次行动语义命中**，即
+  `#evaluateBossCounter` 命中 `bossCounterRules`）→ `kind:"THREAT"` + `threat{type,confidence}`；否则 `OPENING`。
+- 规则配置增 `type` 与 `confidence`（+ 超阈值每多1次 +0.05，封顶0.95）：
+  `PLAYER_WILL_FOLD_TO_PRESSURE / PLAYER_WILL_CALL_TOO_MUCH / PLAYER_WILL_BLUFF_OVERRATED`。
+- 模式计数沿用 PlayerModel 现有统计（foldsToHeavy / callsFaced / lostAsAggressor）——
+  **Personality Prior + 简单统计**，不做预测（§16）。
+
+## 2. THREAT 中的 READ：同一套 UI，语义不同
+
+- 门禁、Focus 消耗、选择层、生命周期与 OPENING **完全一致**（§14：只改标题/文案/视觉）。
+- 差异仅在 TRUE 碎片的交互语义：THREAT 窗口内，手工 READ 的 TRUE 碎片附带
+  **`expects`（= Boss attackHypothesis 对玩家的预测，来自 pending 规则的 playerAction）**，
+  随 PIN 进入 `view.hypothesis`：
+  ```jsonc
+  "hypothesis": { "mode": "want"|"fear"|"expect", "action": "…" } | null
+  ```
+  `mode:"expect"` = 我选中的这条说的是「Boss 赌我会 X」。噪音/distortion → null（不判错）。
+- OPENING 窗口内仍只有 want/fear。
+
+## 3. 选中即生效（删 Hypothesis 面板）
+
+- wire **不新增**字段：`view.hypothesis` 仍是提示数据源；**UI 不再有独立 Hypothesis 横条/确认步**——
+  选中后锁定该碎片（极短「追击态」高亮）→ 按钮下小字**立即**换成本选择对应的关系文案 → 焦点回 Poker。
+- 小字文案（v7 口径，**只在“可利用该信息的动作”上出现**，不解释、不判错）：
+  - `want D`：非攻击动作（call/check/fold）且 ≠D → `追击`；攻击动作（pressure/heavy/raise/bet/allin）且 ≠D → `施压`；==D → 无
+  - `fear F`：==F → `追击`（照他怕的来）；≠F 的攻击动作 → `施压`；其他 → 无
+  - `expect X`：==X → `按他的剧本`；≠X → `打破预测`
+  - 禁止出现：推荐/正确/必定CRACK/真假类型。
+
+## 4. OPENING 强度继续影响信息质量（§7）
+
+READ 真话率追加 `read.openingBonus[strength]`（WEAK 0 / NORMAL / STRONG，配置），
+**仅 OPENING 窗口**；强度仍绝不下发概率。
+
+## 5. 防守结算（玩家在 THREAT 窗口内的成功行动）
+
+判定仅用 **服务端真相**（`pendingBossCounter`）+ 玩家行动 + **是否看穿**（`saw`）：
+
+```
+saw = pinned 非空 且 pinned.expects === trap.playerAction   // 真选中了带预测的碎片
+
+A === 预测X：
+   saw && A === 'fold' → EVASION       // 看懂了但牌不值得：理性退出，FOLD ≠ 心理失败
+   否则                → PLAYER_CRACKED // 他要的到手了 → player_cracked + player_mental 推进
+A !== 预测X：
+   A ∈ 攻击族(pressure/heavy/raise/bet/allin) → REVERSAL  // 打破且反压：攻势结束、pending清空、
+                                                          // 下一个窗口天然是 OPENING（抢回主动）
+   其他（call/check/fold）                     → BREAK     // 打破预测：他的心理攻击失败
+```
+
+- 事件：`{type:"defense", outcome:"EVASION"|"BREAK"|"REVERSAL", expects, action, saw, threatType}`
+  + feed(kind:"model")；PLAYER CRACKED 沿用现有 `player_cracked` + `player_mental`。
+- **THREAT 窗口内不做进攻 CRACK**（`validatePinCrack` 仅在无 pending 时执行；§10.3 反击只抢主动、不自动 CRACK）。
+- **Poker ≠ 心理**（§12）继续成立：defense/crack 事件在行动响应里即时定型，后续 pot 输赢不回滚。
+- combo（v6 §9）修正：**仅 OPENING 窗口**未命中才清段数；THREAT 窗口的防守行动**不清**攻击连段。
+
+## 6. 视觉反馈（Hit Confirm，无长动画）
+
+`OPENING`（进攻机会）/ `THREAT`（Boss 攻击你，红系）/ `CRACK` / `EVASION` / `BREAK` /
+`REVERSAL` / `PLAYER CRACKED` —— 七种短促横幅，事件驱动。
+
+## 7. 生命周期（不变）
+
+玩家行动后：窗口（含 kind/threat）、碎片、pinned、hypothesis 全清；Focus 攻守共用同一池。
+
+## 8. 测试（方案 §18 十三项）
+
+见 `test/threat.test.js`（新）：正确链 CRACK、选错不即时报错、错碎片无CRACK、
+模式成形→THREAT、THREAT READ 识别 expects、EVASION≠CRACKED、BREAK、REVERSAL→新OPENING、
+成立→PLAYER CRACKED、Poker≠心理、Focus 双用途、选中即回操作无面板、结算后全清。

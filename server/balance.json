@@ -87,6 +87,11 @@
       "CALM": 0.0,
       "SHAKEN": 0.1,
       "EXPOSED": 0.2
+    },
+    "openingBonus": {
+      "WEAK": 0.0,
+      "NORMAL": 0.04,
+      "STRONG": 0.08
     }
   },
   "gotcha": {
@@ -390,7 +395,9 @@
       "threshold": 2,
       "bossAction": "heavy",
       "playerAction": "fold",
-      "why": "他面对重注就跑 → 我推重注，他果然跑"
+      "why": "他面对重注就跑 → 我推重注，他果然跑",
+      "type": "PLAYER_WILL_FOLD_TO_PRESSURE",
+      "confidence": 0.72
     },
     {
       "id": "over_call",
@@ -398,7 +405,9 @@
       "threshold": 3,
       "bossAction": "raise",
       "playerAction": "call",
-      "why": "他什么都接 → 我加注，他果然接"
+      "why": "他什么都接 → 我加注，他果然接",
+      "type": "PLAYER_WILL_CALL_TOO_MUCH",
+      "confidence": 0.68
     },
     {
       "id": "agg_punish",
@@ -406,7 +415,9 @@
       "threshold": 2,
       "bossAction": "check",
       "playerAction": "bet",
-      "why": "他输急眼爱开火 → 我让牌，他果然开火"
+      "why": "他输急眼爱开火 → 我让牌，他果然开火",
+      "type": "PLAYER_WILL_BLUFF_OVERRATED",
+      "confidence": 0.65
     }
   ],
   "opening": {

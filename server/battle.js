@@ -303,6 +303,9 @@ export class Battle {
       if (this.#bossActionMatches(rule.bossAction, normalized, putRatio)) {
         return {
           ruleId: rule.ruleId ?? rule.id,
+          // §8：attackHypothesis = Personality Prior + 简单统计（超阈值每多1次 +0.05，封顶0.95）
+          type: rule.type ?? rule.id,
+          confidence: this.#threatConfidence(rule),
           bossAction: rule.bossAction,
           playerAction: rule.playerAction,
           why: rule.why ?? '',
@@ -310,6 +313,12 @@ export class Battle {
       }
     }
     return null;
+  }
+
+  #threatConfidence(rule) {
+    const count = Number(this.model.s?.[rule.pattern] ?? 0);
+    const extra = Math.max(0, count - (rule.threshold ?? 1));
+    return Math.round(Math.min(0.95, (rule.confidence ?? 0.6) + 0.05 * extra) * 100) / 100;
   }
 
   #bossActionMatches(need, normalized, putRatio) {
@@ -324,21 +333,45 @@ export class Battle {
     return false;
   }
 
-  /** 玩家的回应落地：命中陷阱 → Boss CRACK 玩家 + 玩家心理推进（一窗一次）。 */
-  #resolveBossCounter(events, actionLabel) {
+  /**
+   * v7 §5：THREAT 防守结算（一窗一次）。判定只用服务端真相 + 玩家行动 + 是否看穿：
+   *   saw = pinned.expects === 预测X（真选中了带预测的 TRUE 碎片）
+   *   A===X：saw 且 fold → EVASION（看穿但牌不值得：FOLD ≠ 心理失败）；否则 → PLAYER CRACKED
+   *   A!==X：攻击族 → REVERSAL（抢回主动，pending 清空 → 下窗天然是 OPENING）
+   *          其他   → BREAK（他的心理攻击失败）
+   * Poker ≠ 心理：结果在行动响应即定型，后续 pot 输赢不回滚。
+   */
+  #resolveThreat(events, actionLabel) {
     const trap = this.pendingBossCounter;
     if (!trap) return;
     this.pendingBossCounter = null;
-    if (trap.playerAction !== actionLabel) return; // 没上钩：静默失败
-    events.push({
-      type: 'player_cracked',
-      ruleId: trap.ruleId,
-      action: actionLabel,
-      bossAction: trap.bossAction,
-      why: trap.why,
-    });
-    this.#feed('model', `PLAYER CRACKED · ${trap.why}`);
-    this.#advancePlayerState(events);
+    const X = trap.playerAction;
+    const saw = Boolean(this.pinned && this.pinned.expects && this.pinned.expects === X);
+    const AGG = new Set(['pressure', 'heavy', 'raise', 'bet', 'allin']);
+
+    if (actionLabel === X) {
+      if (saw && actionLabel === 'fold') {
+        events.push({ type: 'defense', outcome: 'EVASION', expects: X, action: actionLabel, saw: true, threatType: trap.type });
+        this.#feed('model', `EVASION · 看穿了这手心理战，稳住退出 —— 弃牌不等于被拿捏（${trap.why}）`);
+        return;
+      }
+      events.push({
+        type: 'player_cracked',
+        ruleId: trap.ruleId,
+        action: actionLabel,
+        bossAction: trap.bossAction,
+        why: trap.why,
+      });
+      this.#feed('model', `PLAYER CRACKED · ${trap.why}`);
+      this.#advancePlayerState(events);
+      return;
+    }
+
+    const outcome = AGG.has(actionLabel) ? 'REVERSAL' : 'BREAK';
+    events.push({ type: 'defense', outcome, expects: X, action: actionLabel, saw, threatType: trap.type });
+    this.#feed('model', outcome === 'REVERSAL'
+      ? `REVERSAL · 反压成功，抢回主动！（他赌你会 ${X}）`
+      : `BREAK · 打乱了他的剧本（他赌你会 ${X}）`);
   }
 
   /** Boss CRACK 玩家 → 玩家心理 CALM→SHAKEN→EXPOSED（同一张转移表）。 */
@@ -440,6 +473,10 @@ export class Battle {
       if (d.phase === 'playing' && d.toAct === PLAYER && preStreet === d.street) {
         const tier = tellTier(normalized.type, normalized.put ?? 0, potBefore, this.balance.sizing?.heavyFrac ?? 1);
         const strength = this.#openingStrength(tier, d.street); // v6 §2：WEAK/NORMAL/STRONG
+        // v7 §1：窗口二元 —— 行为模式成形 × 他本次行动语义命中 = THREAT（他正拿判断进攻你）
+        const trap = this.#evaluateBossCounter(normalized, bossPutRatio);
+        const kind = trap ? 'THREAT' : 'OPENING';
+        const threat = trap ? { type: trap.type, confidence: trap.confidence } : null;
         this.actionSeq += 1;
         this.tellSeq += 1;
         this.tellWindow = {
@@ -450,6 +487,8 @@ export class Battle {
           bossAction: normalized.type,
           tier,
           strength,
+          kind,
+          threat,
         };
         events.push({
           type: 'tell_window_open',
@@ -458,8 +497,10 @@ export class Battle {
           street: this.tellWindow.street,
           bossAction: normalized.type,
           strength,
+          kind,
+          threat,
         });
-        this.pendingBossCounter = this.#evaluateBossCounter(normalized, bossPutRatio);
+        this.pendingBossCounter = trap;
       }
 
       if (d.phase !== 'playing') {
@@ -712,15 +753,20 @@ export class Battle {
     events.push(...outEvents);
     this.#recordHistory('player', displayAction, preStreet, normalized.to ?? 0);
 
-    // ---- ★ v5/v6 心理结算（顺序关键：必须在窗口清理之前）----
-    // v6 §9 combo：命中 +1；有 Opening 却没命中（错过/判断失败）清零；无窗口的行动不计
+    // ---- ★ v5/v6/v7 心理结算（顺序关键：必须在窗口清理之前）----
     const openingWasOpen = Boolean(this.tellWindow);
-    // 1) PIN 的真话 × 本次行动 × Boss 当前 intent → 可能 CRACK 并推进其心理
-    const cracked = this.#validatePinCrack(events, displayAction); // 内部已 comboCount+1（并随事件下发）
-    if (!cracked && openingWasOpen) this.comboCount = 0;           // 有 Opening 却未命中 = 清零
-    // 2) Boss 反读陷阱：玩家命中被诱导的行为 → PLAYER CRACKED + 玩家心理推进
-    this.#resolveBossCounter(events, displayAction);
-    // 3) 回应落地 → 窗口关闭、碎片/PIN 全部清空（无论成败，方案 §2）
+    const threatActive = Boolean(this.pendingBossCounter); // v7：THREAT 窗口只做防守结算
+    let cracked = false;
+    if (threatActive) {
+      // v7 §5：防守四结算（EVASION / BREAK / REVERSAL / PLAYER CRACKED）
+      this.#resolveThreat(events, displayAction);
+    } else {
+      // 进攻：PIN 真话 × 本次行动 × Boss 当前 intent → CRACK（内部已 comboCount+1）
+      cracked = this.#validatePinCrack(events, displayAction);
+    }
+    // v6 §9 修正：仅 OPENING 未命中清段；THREAT 防守行动不清攻击连段；无窗口不计
+    if (!cracked && openingWasOpen && !threatActive) this.comboCount = 0;
+    // 回应落地 → 窗口（含 kind/threat）、碎片、PIN 全部清空
     this.#closeTellWindow();
     // 4) Focus 跨街授予（本行动可能推进了街）
     this.#grantFocus(preStreet, d.street);
@@ -785,7 +831,9 @@ export class Battle {
       (rd.baseTrueWeight ?? 0.2)
       + (rd.tellStrength?.[win.tier] ?? 0)
       + (rd.streetModifier?.[win.street] ?? 0)
-      + (rd.stateModifier?.[state] ?? 0),
+      + (rd.stateModifier?.[state] ?? 0)
+      // v7 §4：OPENING 强度继续影响信息质量（THREAT 不加成——泄漏的是他的剧本）
+      + (win.kind === 'OPENING' ? (rd.openingBonus?.[win.strength] ?? 0) : 0),
     );
     const intent = this.boss.currentIntent();
     const count = randomCount(balance.normalReadFragmentCount, this.rng);
@@ -808,8 +856,12 @@ export class Battle {
         text: frag.text,
         type: frag.type,          // ★ 服务端私有
         tags: frag.tags.slice(),  // ★ 服务端私有
-        desire: frag.desire ?? null, // ★ 服务端私有（选中后推导 HYPOTHESIS）
+        desire: frag.desire ?? null, // ★ 服务端私有（选中后推导提示）
         fear: frag.fear ?? null,     // ★ 服务端私有
+        // v7 §2：THREAT 窗口内，TRUE 碎片泄漏「Boss 赌你会 X」
+        expects: (win.kind === 'THREAT' && frag.type === 'TRUE' && this.pendingBossCounter)
+          ? this.pendingBossCounter.playerAction
+          : null,
         strength: frag.strength,
         sourceAction: win.bossAction,
         binding: { handId: win.handId, street: win.street, actionId: win.actionId, tellWindowId: win.id },
@@ -851,6 +903,7 @@ export class Battle {
       tags: meta.tags.slice(),
       desire: meta.desire ?? null,   // v6 §5：他希望你…（服务端私有）
       fear: meta.fear ?? null,       // v6 §5：他害怕你…
+      expects: meta.expects ?? null, // v7 §2：THREAT 中他赌你会 X
       sourceAction: meta.sourceAction,
       binding: meta.binding,
       handId: meta.handId,
@@ -958,14 +1011,17 @@ export class Battle {
             street: this.tellWindow.street,
             bossAction: this.tellWindow.bossAction,
             strength: this.tellWindow.strength,   // v6：WEAK/NORMAL/STRONG
+            kind: this.tellWindow.kind,           // v7：OPENING | THREAT
+            threat: this.tellWindow.threat,       // v7：{type,confidence} | null
           }
         : null,
       // v6 §3：HYPOTHESIS —— 选中碎片推导出的「他希望/害怕你做什么」
       hypothesis: (() => {
         if (!this.pinned) return null;
+        if (this.pinned.expects) return { mode: 'expect', action: this.pinned.expects }; // v7：Boss 赌我会 X
         if (this.pinned.desire) return { mode: 'want', action: this.pinned.desire };
         if (this.pinned.fear) return { mode: 'fear', action: this.pinned.fear };
-        return null; // 噪音/无可利用语义 → 无判断（CRACK 也不可能成立）
+        return null; // 噪音 → 无提示（不提前判错，结算才见分晓）
       })(),
       // v6 §9：连续 CRACK 段数（仅 UI/GOTCHA 前置参考）
       comboCount: this.comboCount,

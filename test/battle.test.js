@@ -69,7 +69,9 @@ test('隐私：view/events 不含 deck、intent、碎片/ PIN 的类型与标签
   const rng = makeRng(11);
   const clk = clock();
   const b = new Battle({ rng, now: clk });
-  const forbiddenKeys = new Set(['deck', 'intent', 'tags', 'type', 'sourceAction', 'fragmentId']); // cracks[].strength 契约允许
+  // 'type' 不再进扁平黑名单：v7 threat.type 是规则名（契约允许）——
+  // 碎片真假类型改用【值扫描】钉死（更严格：任何位置都不得出现 TRUE/NOISE/DISTORTION）
+  const forbiddenKeys = new Set(['deck', 'intent', 'tags', 'sourceAction', 'fragmentId']); // cracks[].strength 契约允许
   let hands = 0;
 
   for (let i = 0; i < 800 && hands < 5; i++) {
@@ -78,14 +80,17 @@ test('隐私：view/events 不含 deck、intent、碎片/ PIN 的类型与标签
     if (b.duel.phase === 'playing') {
       assert.equal(v.boss.hole, null, 'view 永远不含 Boss 底牌');
       const bossHole = new Set(b.duel.hole[1]);
-      for (const s of allStrings(v)) assert.ok(!bossHole.has(s), `view 泄露 Boss 底牌 ${s}`);
+      for (const s of allStrings(v)) {
+        assert.ok(!bossHole.has(s), `view 泄露 Boss 底牌 ${s}`);
+        assert.ok(!['TRUE', 'NOISE', 'DISTORTION'].includes(s), `view 泄露碎片真值类型: ${s}`);
+      }
     }
     for (const key of allKeys(v)) {
       assert.ok(!forbiddenKeys.has(key), `view 出现内部字段 ${key}`);
     }
     // 面板与 PIN 的字段白名单
     for (const f of v.readFragments) assert.deepEqual(Object.keys(f).sort(), ['atHand', 'id', 'tellWindowId', 'text']);
-    if (v.tellWindow) assert.deepEqual(Object.keys(v.tellWindow).sort(), ['actionId', 'bossAction', 'handId', 'id', 'street', 'strength'], '窗口剥掉内部 tier，带 strength');
+    if (v.tellWindow) assert.deepEqual(Object.keys(v.tellWindow).sort(), ['actionId', 'bossAction', 'handId', 'id', 'kind', 'street', 'strength', 'threat'], '窗口剥掉内部 tier，带 strength/kind/threat');
     if (v.pin) assert.deepEqual(Object.keys(v.pin).sort(), ['text', 'verified']);
 
     const prevHand = b.handNo;
@@ -110,8 +115,14 @@ test('隐私：view/events 不含 deck、intent、碎片/ PIN 的类型与标签
         }
       }
       if (e.type === 'tell_window_open') {
-        assert.deepEqual(Object.keys(e).sort(), ['actionId', 'bossAction', 'id', 'street', 'strength', 'type'], 'tell_window_open 字段越界');
+        assert.deepEqual(Object.keys(e).sort(), ['actionId', 'bossAction', 'id', 'kind', 'street', 'strength', 'threat', 'type'], 'tell_window_open 字段越界');
         assert.ok(['WEAK', 'NORMAL', 'STRONG'].includes(e.strength), '强度三档');
+        assert.ok(['OPENING', 'THREAT'].includes(e.kind), '窗口二元');
+        assert.ok(e.kind === 'THREAT' ? (e.threat && typeof e.threat.confidence === 'number') : e.threat === null, 'threat 形状随 kind');
+      }
+      if (e.type === 'defense') {
+        assert.ok(['EVASION', 'BREAK', 'REVERSAL'].includes(e.outcome), '防守三结果');
+        assert.ok(typeof e.expects === 'string' && typeof e.saw === 'boolean');
       }
       if (e.type === 'crack') assert.ok(typeof e.combo === 'number', 'crack 携带段数');
       if (e.type === 'player_cracked') assert.ok(!('pattern' in e) && !('threshold' in e), '反读不下发计数器');
@@ -258,7 +269,7 @@ test('BUSTED：宣告 + 本手攻击增益，但不再切换 mode', () => {
 test('事件契约：类型白名单 + hand_start/hand_end 字段齐全 + 筹码守恒', () => {
   const known = new Set([
     'hand_start', 'blinds', 'action', 'street', 'talk', 'read_batch', 'crack',
-    'tell_window_open', 'player_cracked', 'player_mental',
+    'tell_window_open', 'player_cracked', 'player_mental', 'defense',
     'mode', 'busted', 'mental', 'showdown', 'fold_win',
     'pot_move', 'hand_end', 'game_over',
   ]);
